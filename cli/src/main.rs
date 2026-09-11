@@ -11,8 +11,42 @@ use openscq30_lib::OpenSCQ30Session;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
+#[cfg(not(target_os = "macos"))]
 #[tokio::main]
 async fn main() -> ExitCode {
+    run().await
+}
+
+// IOBluetooth delivers delegate callbacks (RFCOMM data, channel open/close) through the
+// process's main thread run loop regardless of which thread issued the call, so tokio can't be
+// left owning the real OS main thread here the way #[tokio::main] normally would: nothing would
+// ever pump a run loop on it, and every callback would silently never arrive.
+#[cfg(target_os = "macos")]
+fn main() -> ExitCode {
+    let (exit_code_sender, exit_code_receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Runtime::new().expect("failed to start tokio runtime");
+        let _ = exit_code_sender.send(runtime.block_on(run()));
+    });
+
+    loop {
+        match exit_code_receiver.try_recv() {
+            Ok(code) => return code,
+            // the worker thread panicked before sending a result
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => return ExitCode::FAILURE,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+        unsafe {
+            objc2_core_foundation::CFRunLoop::run_in_mode(
+                objc2_core_foundation::kCFRunLoopDefaultMode,
+                0.1,
+                false,
+            );
+        }
+    }
+}
+
+async fn run() -> ExitCode {
     let matches = cli::build().get_matches();
 
     if let Err(err) = initialize_logging(&matches) {
