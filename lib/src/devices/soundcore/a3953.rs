@@ -9,12 +9,15 @@ use crate::devices::soundcore::{
     },
 };
 
+mod modules;
 mod packets;
 mod state;
+pub mod structures;
 
-// Only battery, dual firmware version, and serial number have been reverse-engineered so far (see
-// packets::state_update). Everything else (equalizer, sound modes, buttons, flags) needs more
-// captures with individual settings toggled via the official app to identify field offsets.
+// Battery, dual firmware version, serial number, and ambient sound mode have been
+// reverse-engineered (see packets::state_update and structures::SoundModes, both cited against the
+// official app's decompiled source). Equalizer, buttons, and the remaining flags still need more
+// captures (or further decompilation) to identify field offsets.
 soundcore_device!(
     A3953State,
     async |packet_io| {
@@ -27,6 +30,7 @@ soundcore_device!(
         // Only ever observed at 5/5 (fully charged); assumed max_level 5 to match the structurally
         // similar A3947 (Liberty 4 NC) until a partial-charge capture confirms or corrects this.
         builder.dual_battery(5);
+        builder.a3953_sound_modes();
     },
     {
         HashMap::from([(
@@ -83,6 +87,68 @@ mod tests {
             (SettingId::FirmwareVersionLeft, "03.23".into()),
             (SettingId::FirmwareVersionRight, "03.23".into()),
             (SettingId::SerialNumber, "395354C633CCEEE8".into()),
+            (SettingId::AmbientSoundMode, "Normal".into()),
         ]);
+    }
+
+    // The three tests below are real captures of the same device, differing only in byte 121 (the
+    // ambient sound mode toggled in the official app between captures): 2 (Normal), 0 (Noise
+    // Canceling), and 1 (Transparency). See a3953/structures.rs for the byte citation.
+    #[tokio::test(start_paused = true)]
+    async fn parses_noise_canceling_mode() {
+        let device = TestSoundcoreDevice::new(
+            super::device_registry,
+            DeviceModel::SoundcoreA3953,
+            HashMap::from([(
+                packet::Command([1, 1]),
+                packet::Inbound::new(
+                    packet::Command([1, 1]),
+                    vec![
+                        1, 1, 5, 5, 0, 0, 48, 51, 46, 50, 51, 48, 51, 46, 50, 51, 51, 57, 53, 51,
+                        53, 52, 67, 54, 51, 51, 67, 67, 69, 69, 69, 56, 0, 0, 120, 120, 120, 120,
+                        120, 120, 120, 120, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+                        255, 0, 60, 60, 60, 60, 60, 60, 60, 60, 0, 0, 60, 60, 60, 60, 60, 60, 60,
+                        60, 0, 0, 0, 0, 0, 0, 0, 60, 60, 60, 60, 60, 60, 60, 60, 0, 0, 60, 60, 60,
+                        60, 60, 60, 60, 60, 0, 0, 0, 0, 18, 17, 102, 17, 102, 17, 52, 17, 52, 17,
+                        36, 17, 36, 17, 82, 17, 83, 3, 0, 48, 0, 0, 1, 1, 0, 0, 0, 0, 255, 255, 1,
+                        1, 0, 5, 0, 0, 0, 1, 2, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0, 120, 255, 50, 0, 255,
+                        255,
+                    ],
+                ),
+            )]),
+            SoundcoreDeviceConfig::default(),
+        )
+        .await;
+
+        device.assert_setting_values([(SettingId::AmbientSoundMode, "NoiseCanceling".into())]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn parses_transparency_mode() {
+        let device = TestSoundcoreDevice::new(
+            super::device_registry,
+            DeviceModel::SoundcoreA3953,
+            HashMap::from([(
+                packet::Command([1, 1]),
+                packet::Inbound::new(
+                    packet::Command([1, 1]),
+                    vec![
+                        1, 1, 5, 5, 0, 0, 48, 51, 46, 50, 51, 48, 51, 46, 50, 51, 51, 57, 53, 51,
+                        53, 52, 67, 54, 51, 51, 67, 67, 69, 69, 69, 56, 0, 0, 120, 120, 120, 120,
+                        120, 120, 120, 120, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+                        255, 0, 60, 60, 60, 60, 60, 60, 60, 60, 0, 0, 60, 60, 60, 60, 60, 60, 60,
+                        60, 0, 0, 0, 0, 0, 0, 0, 60, 60, 60, 60, 60, 60, 60, 60, 0, 0, 60, 60, 60,
+                        60, 60, 60, 60, 60, 0, 0, 0, 0, 18, 17, 102, 17, 102, 17, 52, 17, 52, 17,
+                        36, 17, 36, 17, 82, 17, 83, 3, 1, 48, 0, 0, 1, 1, 0, 0, 0, 0, 255, 255, 1,
+                        1, 0, 5, 0, 0, 0, 1, 2, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0, 120, 255, 50, 0, 255,
+                        255,
+                    ],
+                ),
+            )]),
+            SoundcoreDeviceConfig::default(),
+        )
+        .await;
+
+        device.assert_setting_values([(SettingId::AmbientSoundMode, "Transparency".into())]);
     }
 }
