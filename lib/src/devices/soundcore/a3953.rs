@@ -16,12 +16,12 @@ mod state;
 pub mod structures;
 
 // Battery, dual firmware version, serial number, ambient sound mode, wind noise suppression, wear
-// detection, case battery level, LDAC, auto power off, wearing tone (the app calls it "in ear
-// beep"), and press sensitivity have all been reverse-engineered against the official app's
-// decompiled source (see packets::state_update, structures.rs). Button configuration is parsed
-// (see structures::ButtonConfig) but not exposed: no set command or action-ID meaning was found.
-// Equalizer and the remaining flags (bass up, dual connection, low battery alert, ambient sound
-// prompt, spatial audio) are parsed but not yet exposed either, for the same reason (see
+// detection, case battery level, LDAC, dual-connection support, auto power off, wearing tone (the
+// app calls it "in ear beep"), low battery prompt, ambient sound prompt, spatial audio, and press
+// sensitivity have all been reverse-engineered against the official app's decompiled source (see
+// packets::state_update, structures.rs). Button configuration is parsed (see
+// structures::ButtonConfig) but not exposed: no set command or action-ID meaning was found.
+// Equalizer and "bass up" are parsed but not yet exposed either, for the same reason (see
 // packets::state_update for the full field list).
 soundcore_device!(
     A3953State,
@@ -43,6 +43,9 @@ soundcore_device!(
         builder.ldac();
         builder.auto_power_off(AutoPowerOffDuration::ten_twenty_thirty_sixty());
         builder.wearing_tone();
+        builder.low_battery_prompt();
+        builder.a3953_misc_toggles();
+        builder.a3953_spatial_audio();
         builder.a3953_press_sensitivity();
     },
     {
@@ -108,6 +111,12 @@ mod tests {
             (SettingId::AutoPowerOff, "30m".into()),
             (SettingId::WearingTone, true.into()),
             (SettingId::PressSensitivity, 0.into()),
+            (SettingId::LowBatteryPrompt, true.into()),
+            (SettingId::AmbientSoundPrompt, true.into()),
+            (SettingId::SupportTwoConnections, false.into()),
+            (SettingId::SpatialAudio, false.into()),
+            (SettingId::SpatialAudioMode, "Music".into()),
+            (SettingId::SpatialAudioMusicMode, "Fixed".into()),
         ]);
     }
 

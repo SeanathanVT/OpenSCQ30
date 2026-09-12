@@ -15,7 +15,8 @@ use crate::devices::soundcore::{
         packet::{self, inbound::FromPacketBody, outbound::ToPacket},
         structures::{
             AmbientSoundModeCycle, AutoPowerOff, CaseBatteryLevel, DualBattery,
-            DualFirmwareVersion, Ldac, SerialNumber, TwsStatus, WearingDetection, WearingTone,
+            DualFirmwareVersion, Ldac, LowBatteryPrompt, SerialNumber, TwsStatus, WearingDetection,
+            WearingTone,
         },
     },
 };
@@ -66,10 +67,12 @@ use crate::devices::soundcore::{
 ///   command.
 /// - `ldac` (`bArr[custom_length + 129]`): same command (`[0x01, 0xFF]`, decompiled constant
 ///   `Cmm2CmdData.f16o0`) as this project's shared `Ldac` flag.
-/// - `unknown_dual_connection` (`bArr[custom_length + 130]`): a two-simultaneous-connections
-///   toggle. This project's `DualConnections` structure is a much larger feature (a whole device
-///   list with its own inbound/outbound packets) that doesn't match this single bit, so it isn't
-///   reused here, and no matching single-bit set command was located either.
+/// - `support_two_connections` (`bArr[custom_length + 130]`): this project's `DualConnections`
+///   structure is a much larger feature (a whole device list with its own inbound/outbound
+///   packets), so this single bit (labeled `SupportTwoCnnSwitch` in the decompiled bean) gets its
+///   own minimal type instead. Command `[0x0B, 0x84]` (decompiled constant `Cmm2CmdData.E1`, built
+///   by `CmmBtCmdService.B0`), traced from `A3953DeviceListActivity` through the shared
+///   `A3952DeviceListVM.sendDeviceListSwitchCmd` → `Cmm2BtDeviceManager.a7`.
 /// - `auto_power_off` (`bArr[custom_length + 131 .. custom_length + 133]`, 2 bytes): same command
 ///   (`[0x01, 0x86]`, decompiled constant `Cmm2CmdData.L`) and same
 ///   `(bool is_enabled, u8 duration_index)` layout as this project's shared `AutoPowerOff`
@@ -83,11 +86,19 @@ use crate::devices::soundcore::{
 /// - `wearing_tone` (`bArr[custom_length + 134]`): the app calls this field "in ear beep", but it
 ///   uses the same command (`[0x01, 0x8C]`, decompiled constant `Cmm2CmdData.f17p0`) as this
 ///   project's shared `WearingTone` flag, so it's reused under that name.
-/// - `unknown_tail` (`bArr[custom_length + 135 .. custom_length + 145]`, 10 bytes): low battery
-///   alert, ambient sound prompt, spatial audio switch/effect mode/sound mode, and four
+/// - `low_battery_prompt` (`custom_length + 126` here; `bArr[custom_length + 135]` in `R0`'s own
+///   indexing): command `[0x10, 0x82]` (decompiled constant `Cmm2CmdData.v2`), matching this
+///   project's existing `SET_LOW_BATTERY_PROMPT_COMMAND` exactly; traced via
+///   `A3953PromptVM.setLowBatterySwitch` → `Cmm2BtDeviceManager.m6` → `CmmBtCmdService.F1`.
+/// - `ambient_sound_prompt` (`custom_length + 127` here): command `[0x10, 0x83]` (decompiled
+///   constant `Cmm2CmdData.w2`), see `a3953::structures::AmbientSoundPrompt` for the full citation.
+/// - `spatial_audio` (`custom_length + 128 .. custom_length + 131` here, 3 bytes): switch, effect
+///   mode, content mode; see `a3953::structures::SpatialAudio` for the full citation.
+/// - `unknown_health_and_gap` (`custom_length + 131 .. custom_length + 136` here, 5 bytes): four
 ///   "daily care" health-tracking fields (sedentary reminder, sitting posture, heart rate
 ///   abnormality alarm and its threshold) that read as all-zero on this earbud and may belong to a
-///   different product category sharing the same parser. None have a located set command.
+///   different product category sharing the same parser, plus one trailing byte `R0` never reads
+///   at all. None have a located set command.
 /// - `device_colour` and `press_sensitivity`: only present when `R0`'s own length check
 ///   (`bArr.length > 163`, i.e. this packet's body is longer than 154 bytes) holds; a 1-byte ASCII
 ///   colour code with no located meaning, and a 1-byte value (see
@@ -111,11 +122,14 @@ pub struct A3953StateUpdatePacket {
     pub case_battery_level: CaseBatteryLevel,
     pub unknown_bass_up: Vec<u8>,
     pub ldac: Ldac,
-    pub unknown_dual_connection: Vec<u8>,
+    pub support_two_connections: a3953::structures::SupportTwoConnections,
     pub auto_power_off: AutoPowerOff,
     pub unknown_hear_id_volume_db: Vec<u8>,
     pub wearing_tone: WearingTone,
-    pub unknown_tail: Vec<u8>,
+    pub low_battery_prompt: LowBatteryPrompt,
+    pub ambient_sound_prompt: a3953::structures::AmbientSoundPrompt,
+    pub spatial_audio: a3953::structures::SpatialAudio,
+    pub unknown_health_and_gap: Vec<u8>,
     pub device_colour: Option<u8>,
     pub press_sensitivity: Option<a3953::structures::PressSensitivity>,
     pub unknown_suffix: Vec<u8>,
@@ -142,11 +156,14 @@ impl Default for A3953StateUpdatePacket {
             case_battery_level: Default::default(),
             unknown_bass_up: vec![0; 1],
             ldac: Default::default(),
-            unknown_dual_connection: vec![0; 1],
+            support_two_connections: Default::default(),
             auto_power_off: Default::default(),
             unknown_hear_id_volume_db: vec![0; 1],
             wearing_tone: Default::default(),
-            unknown_tail: vec![0; 10],
+            low_battery_prompt: Default::default(),
+            ambient_sound_prompt: Default::default(),
+            spatial_audio: Default::default(),
+            unknown_health_and_gap: vec![0; 5],
             device_colour: None,
             press_sensitivity: None,
             unknown_suffix: Vec::new(),
@@ -179,11 +196,15 @@ impl FromPacketBody for A3953StateUpdatePacket {
             let (input, case_battery_level) = CaseBatteryLevel::take(input)?;
             let (input, unknown_bass_up) = take(1usize)(input)?;
             let (input, ldac) = Ldac::take(input)?;
-            let (input, unknown_dual_connection) = take(1usize)(input)?;
+            let (input, support_two_connections) =
+                a3953::structures::SupportTwoConnections::take(input)?;
             let (input, auto_power_off) = AutoPowerOff::take(input)?;
             let (input, unknown_hear_id_volume_db) = take(1usize)(input)?;
             let (input, wearing_tone) = WearingTone::take(input)?;
-            let (input, unknown_tail) = take(10usize)(input)?;
+            let (input, low_battery_prompt) = LowBatteryPrompt::take(input)?;
+            let (input, ambient_sound_prompt) = a3953::structures::AmbientSoundPrompt::take(input)?;
+            let (input, spatial_audio) = a3953::structures::SpatialAudio::take(input)?;
+            let (input, unknown_health_and_gap) = take(5usize)(input)?;
             let (input, (device_colour, press_sensitivity)) = if total_len > 154 {
                 let (input, colour_byte) = le_u8(input)?;
                 let (input, press_sensitivity) = a3953::structures::PressSensitivity::take(input)?;
@@ -211,11 +232,14 @@ impl FromPacketBody for A3953StateUpdatePacket {
                     case_battery_level,
                     unknown_bass_up: unknown_bass_up.to_vec(),
                     ldac,
-                    unknown_dual_connection: unknown_dual_connection.to_vec(),
+                    support_two_connections,
                     auto_power_off,
                     unknown_hear_id_volume_db: unknown_hear_id_volume_db.to_vec(),
                     wearing_tone,
-                    unknown_tail: unknown_tail.to_vec(),
+                    low_battery_prompt,
+                    ambient_sound_prompt,
+                    spatial_audio,
+                    unknown_health_and_gap: unknown_health_and_gap.to_vec(),
                     device_colour,
                     press_sensitivity,
                     unknown_suffix,
@@ -252,11 +276,14 @@ impl ToPacket for A3953StateUpdatePacket {
             .chain(self.case_battery_level.bytes())
             .chain(self.unknown_bass_up.iter().copied())
             .chain(self.ldac.bytes())
-            .chain(self.unknown_dual_connection.iter().copied())
+            .chain(self.support_two_connections.bytes())
             .chain(self.auto_power_off.bytes())
             .chain(self.unknown_hear_id_volume_db.iter().copied())
             .chain(self.wearing_tone.bytes())
-            .chain(self.unknown_tail.iter().copied())
+            .chain(self.low_battery_prompt.bytes())
+            .chain(self.ambient_sound_prompt.bytes())
+            .chain(self.spatial_audio.bytes())
+            .chain(self.unknown_health_and_gap.iter().copied())
             .chain(self.device_colour)
             .chain(
                 self.press_sensitivity

@@ -7,7 +7,7 @@ use nom::{
 
 use crate::devices::soundcore::common::{
     modules::sound_modes_v2::ToPacketBody,
-    packet::{self, inbound::FromPacketBody},
+    packet::{self, inbound::FromPacketBody, parsing::take_bool},
     structures::{AmbientSoundMode, WindNoise},
 };
 
@@ -217,5 +217,151 @@ impl PressSensitivity {
 
     pub fn bytes(&self) -> [u8; 1] {
         [self.0.min(4)]
+    }
+}
+
+/// Whether the spatial-audio "effect" is fixed in place or head-tracked, cited from the literal
+/// constants `A3953SpatialAudioVM.SPATIAL_MODE_FIXED = 1` / `SPATIAL_MODE_HEAD_TRACKING = 2`
+/// (confirmed against `A3953SpatialActivity`'s toggle handlers, which call
+/// `effectMode.set(1)`/`effectMode.set(2)`).
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Default,
+    ::strum::FromRepr,
+    ::strum::Display,
+    ::strum::IntoStaticStr,
+    ::strum::EnumString,
+    ::strum::EnumIter,
+    ::strum::VariantArray,
+    ::openscq30_i18n_macros::Translate,
+)]
+#[repr(u8)]
+pub enum SpatialMode {
+    #[default]
+    Fixed = 1,
+    HeadTracking = 2,
+}
+
+impl SpatialMode {
+    pub fn take<'a, E: ParseError<&'a [u8]> + ContextError<&'a [u8]>>(
+        input: &'a [u8],
+    ) -> IResult<&'a [u8], Self, E> {
+        map(le_u8, |b| Self::from_repr(b).unwrap_or_default()).parse_complete(input)
+    }
+}
+
+/// The spatial-audio content-type selector, cited from the literal constants
+/// `A3953SpatialAudioVM.SOUND_MODE_MUSIC = 0` / `SOUND_MODE_MOVIE = 1` (confirmed against
+/// `A3953SpatialActivity`'s toggle handlers, which call `soundMode.set(0)`/`soundMode.set(1)`).
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Default,
+    ::strum::FromRepr,
+    ::strum::Display,
+    ::strum::IntoStaticStr,
+    ::strum::EnumString,
+    ::strum::EnumIter,
+    ::strum::VariantArray,
+    ::openscq30_i18n_macros::Translate,
+)]
+#[repr(u8)]
+pub enum SpatialContentMode {
+    #[default]
+    Music = 0,
+    Movie = 1,
+}
+
+impl SpatialContentMode {
+    pub fn take<'a, E: ParseError<&'a [u8]> + ContextError<&'a [u8]>>(
+        input: &'a [u8],
+    ) -> IResult<&'a [u8], Self, E> {
+        map(le_u8, |b| Self::from_repr(b).unwrap_or_default()).parse_complete(input)
+    }
+}
+
+/// Spatial audio (switch, effect mode, content mode), sent together as 3 bytes with command
+/// `[0x10, 0x81]` (decompiled constant `Cmm2CmdData.u2`, built by `CmmBtCmdService.b4`, called from
+/// `Cmm2BtDeviceManager.T6`, called from `A3953SpatialAudioVM.setSpatialAudioFun`). Byte order
+/// (switch, effect mode, content mode) matches `A3953AnalysisService.R0`'s read order exactly
+/// (`spatialSwitch`, `spatialEffectMode`, `spatialSoundMode`).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SpatialAudio {
+    pub is_enabled: bool,
+    pub effect_mode: SpatialMode,
+    pub sound_mode: SpatialContentMode,
+}
+
+impl SpatialAudio {
+    pub fn take<'a, E: ParseError<&'a [u8]> + ContextError<&'a [u8]>>(
+        input: &'a [u8],
+    ) -> IResult<&'a [u8], Self, E> {
+        context(
+            "a3953 spatial audio",
+            map(
+                (take_bool, SpatialMode::take, SpatialContentMode::take),
+                |(is_enabled, effect_mode, sound_mode)| Self {
+                    is_enabled,
+                    effect_mode,
+                    sound_mode,
+                },
+            ),
+        )
+        .parse_complete(input)
+    }
+
+    pub fn bytes(&self) -> [u8; 3] {
+        [
+            u8::from(self.is_enabled),
+            self.effect_mode as u8,
+            self.sound_mode as u8,
+        ]
+    }
+}
+
+/// Sent with command `[0x10, 0x83]` (decompiled constant `Cmm2CmdData.w2`, built by
+/// `CmmBtCmdService.e1`, called from `Cmm2BtDeviceManager.v4`, called from
+/// `A3953PromptVM.setAmbientChangeSwitch`).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct AmbientSoundPrompt(pub bool);
+
+impl AmbientSoundPrompt {
+    pub fn take<'a, E: ParseError<&'a [u8]> + ContextError<&'a [u8]>>(
+        input: &'a [u8],
+    ) -> IResult<&'a [u8], Self, E> {
+        map(take_bool, Self).parse_complete(input)
+    }
+
+    pub fn bytes(&self) -> [u8; 1] {
+        [u8::from(self.0)]
+    }
+}
+
+/// Lets the earbuds stay connected to two phones/devices at once (labeled "SupportTwoCnnSwitch" in
+/// the decompiled bean, toggled from the device list screen). Sent with command `[0x0B, 0x84]`
+/// (decompiled constant `Cmm2CmdData.E1`, built by `CmmBtCmdService.B0`, called from
+/// `Cmm2BtDeviceManager.a7`, called from `A3952DeviceListVM.sendDeviceListSwitchCmd`, the shared
+/// device-list view model this device's `A3953DeviceListActivity` reuses).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SupportTwoConnections(pub bool);
+
+impl SupportTwoConnections {
+    pub fn take<'a, E: ParseError<&'a [u8]> + ContextError<&'a [u8]>>(
+        input: &'a [u8],
+    ) -> IResult<&'a [u8], Self, E> {
+        map(take_bool, Self).parse_complete(input)
+    }
+
+    pub fn bytes(&self) -> [u8; 1] {
+        [u8::from(self.0)]
     }
 }

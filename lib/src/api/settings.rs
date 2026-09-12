@@ -144,6 +144,8 @@ pub enum SettingId {
     LowBatteryPrompt,
     WearingDetection,
     PressSensitivity,
+    AmbientSoundPrompt,
+    SupportTwoConnections,
     Volume,
     VoicePrompt,
     AncPersonalizedToEarCanal,
