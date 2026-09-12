@@ -143,6 +143,7 @@ pub enum SettingId {
     TouchLock,
     LowBatteryPrompt,
     WearingDetection,
+    PressSensitivity,
     Volume,
     VoicePrompt,
     AncPersonalizedToEarCanal,

@@ -5,6 +5,7 @@ use crate::devices::soundcore::{
     common::{
         device::fetch_state_from_state_update_packet,
         macros::soundcore_device,
+        modules::auto_power_off::AutoPowerOffDuration,
         packet::outbound::{RequestState, ToPacket},
     },
 };
@@ -14,10 +15,14 @@ mod packets;
 mod state;
 pub mod structures;
 
-// Battery, dual firmware version, serial number, and ambient sound mode have been
-// reverse-engineered (see packets::state_update and structures::SoundModes, both cited against the
-// official app's decompiled source). Equalizer, buttons, and the remaining flags still need more
-// captures (or further decompilation) to identify field offsets.
+// Battery, dual firmware version, serial number, ambient sound mode, wind noise suppression, wear
+// detection, case battery level, LDAC, auto power off, wearing tone (the app calls it "in ear
+// beep"), and press sensitivity have all been reverse-engineered against the official app's
+// decompiled source (see packets::state_update, structures.rs). Button configuration is parsed
+// (see structures::ButtonConfig) but not exposed: no set command or action-ID meaning was found.
+// Equalizer and the remaining flags (bass up, dual connection, low battery alert, ambient sound
+// prompt, spatial audio) are parsed but not yet exposed either, for the same reason (see
+// packets::state_update for the full field list).
 soundcore_device!(
     A3953State,
     async |packet_io| {
@@ -31,6 +36,14 @@ soundcore_device!(
         // similar A3947 (Liberty 4 NC) until a partial-charge capture confirms or corrects this.
         builder.dual_battery(5);
         builder.a3953_sound_modes();
+        builder.wearing_detection();
+        // Same caveat as dual_battery above: the device's own S() clamp permits 0-9, but no
+        // partial-charge capture exists to confirm whether 5 is really this device's max.
+        builder.case_battery_level(5);
+        builder.ldac();
+        builder.auto_power_off(AutoPowerOffDuration::ten_twenty_thirty_sixty());
+        builder.wearing_tone();
+        builder.a3953_press_sensitivity();
     },
     {
         HashMap::from([(
@@ -88,6 +101,13 @@ mod tests {
             (SettingId::FirmwareVersionRight, "03.23".into()),
             (SettingId::SerialNumber, "395354C633CCEEE8".into()),
             (SettingId::AmbientSoundMode, "Normal".into()),
+            (SettingId::WindNoiseSuppression, true.into()),
+            (SettingId::WearingDetection, true.into()),
+            (SettingId::CaseBatteryLevel, "5/5".into()),
+            (SettingId::Ldac, false.into()),
+            (SettingId::AutoPowerOff, "30m".into()),
+            (SettingId::WearingTone, true.into()),
+            (SettingId::PressSensitivity, 0.into()),
         ]);
     }
 

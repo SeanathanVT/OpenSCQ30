@@ -20,6 +20,7 @@ enum_subset! {
     #[derive(EnumString, EnumIter, IntoStaticStr)]
     enum SoundModesSetting {
         AmbientSoundMode,
+        WindNoiseSuppression,
     }
 }
 

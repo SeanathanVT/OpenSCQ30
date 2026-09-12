@@ -2,7 +2,10 @@ use openscq30_lib_macros::Has;
 
 use crate::devices::soundcore::{
     a3953,
-    common::structures::{DualBattery, DualFirmwareVersion, SerialNumber, TwsStatus},
+    common::structures::{
+        AutoPowerOff, CaseBatteryLevel, DualBattery, DualFirmwareVersion, Ldac, SerialNumber,
+        TwsStatus, WearingDetection, WearingTone,
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Has)]
@@ -12,6 +15,12 @@ pub struct A3953State {
     dual_firmware_version: DualFirmwareVersion,
     serial_number: SerialNumber,
     sound_modes: a3953::structures::SoundModes,
+    wearing_detection: WearingDetection,
+    case_battery_level: CaseBatteryLevel,
+    ldac: Ldac,
+    auto_power_off: AutoPowerOff,
+    wearing_tone: WearingTone,
+    press_sensitivity: a3953::structures::PressSensitivity,
 }
 
 impl From<a3953::packets::A3953StateUpdatePacket> for A3953State {
@@ -27,6 +36,19 @@ impl From<a3953::packets::A3953StateUpdatePacket> for A3953State {
             unknown_gap: _,
             ambient_sound_mode_cycle: _,
             sound_modes,
+            unknown_personal_anc_test_info: _,
+            wearing_detection,
+            unknown_wearing_status: _,
+            case_battery_level,
+            unknown_bass_up: _,
+            ldac,
+            unknown_dual_connection: _,
+            auto_power_off,
+            unknown_hear_id_volume_db: _,
+            wearing_tone,
+            unknown_tail: _,
+            device_colour: _,
+            press_sensitivity,
             unknown_suffix: _,
         } = packet;
 
@@ -36,6 +58,12 @@ impl From<a3953::packets::A3953StateUpdatePacket> for A3953State {
             dual_firmware_version,
             serial_number,
             sound_modes,
+            wearing_detection,
+            case_battery_level,
+            ldac,
+            auto_power_off,
+            wearing_tone,
+            press_sensitivity: press_sensitivity.unwrap_or_default(),
         }
     }
 }

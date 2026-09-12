@@ -89,3 +89,133 @@ impl ToPacketBody for SoundModes {
         self.bytes().to_vec()
     }
 }
+
+/// One button press-type's (single/double/long/triple press, for one earbud) configuration, as
+/// read by `com.oceanwing.devicecmd.manager.product.a3953.A3953AnalysisService.G0`: two bytes,
+/// each nibble-packed as `(BytesUtil.G(byte), BytesUtil.K(byte))` = (high nibble, low nibble).
+/// `untws_*` fields apply when the earbud is used alone (not connected as a TWS pair); the
+/// unprefixed fields apply when TWS-connected. `action`/`untws_action` are raw 0-15 IDs; no
+/// enum mapping from ID to behavior (e.g. "volume up") was found anywhere in the decompiled
+/// source, so they're left as plain numbers rather than guessed at. No outbound command that
+/// writes this struct back was found either, so it's read-only for now.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ButtonAssignment {
+    pub untws_enabled: bool,
+    pub enabled: bool,
+    pub untws_action: u8,
+    pub action: u8,
+}
+
+impl ButtonAssignment {
+    pub fn take<'a, E: ParseError<&'a [u8]> + ContextError<&'a [u8]>>(
+        input: &'a [u8],
+    ) -> IResult<&'a [u8], Self, E> {
+        map((le_u8, le_u8), |(switch_byte, action_byte)| Self {
+            untws_enabled: switch_byte >> 4 == 1,
+            enabled: switch_byte & 0x0F == 1,
+            untws_action: action_byte >> 4,
+            action: action_byte & 0x0F,
+        })
+        .parse_complete(input)
+    }
+
+    pub fn bytes(&self) -> [u8; 2] {
+        [
+            (u8::from(self.untws_enabled) << 4) | u8::from(self.enabled),
+            ((self.untws_action & 0x0F) << 4) | (self.action & 0x0F),
+        ]
+    }
+}
+
+/// Full 16-byte button configuration block (`bArr[113..129]` in `A3953AnalysisService.R0`, i.e.
+/// `bArr[113..129]`, passed to `G0` starting at `bArr[113]`). Field order (single, double, long,
+/// triple; left before right for each) matches the order `G0` populates them in, which is not the
+/// same order this project's other Soundcore devices use (they go single/double/triple/long).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ButtonConfig {
+    pub left_single: ButtonAssignment,
+    pub right_single: ButtonAssignment,
+    pub left_double: ButtonAssignment,
+    pub right_double: ButtonAssignment,
+    pub left_long: ButtonAssignment,
+    pub right_long: ButtonAssignment,
+    pub left_triple: ButtonAssignment,
+    pub right_triple: ButtonAssignment,
+}
+
+impl ButtonConfig {
+    pub fn take<'a, E: ParseError<&'a [u8]> + ContextError<&'a [u8]>>(
+        input: &'a [u8],
+    ) -> IResult<&'a [u8], Self, E> {
+        context(
+            "a3953 button config",
+            map(
+                (
+                    ButtonAssignment::take,
+                    ButtonAssignment::take,
+                    ButtonAssignment::take,
+                    ButtonAssignment::take,
+                    ButtonAssignment::take,
+                    ButtonAssignment::take,
+                    ButtonAssignment::take,
+                    ButtonAssignment::take,
+                ),
+                |(
+                    left_single,
+                    right_single,
+                    left_double,
+                    right_double,
+                    left_long,
+                    right_long,
+                    left_triple,
+                    right_triple,
+                )| Self {
+                    left_single,
+                    right_single,
+                    left_double,
+                    right_double,
+                    left_long,
+                    right_long,
+                    left_triple,
+                    right_triple,
+                },
+            ),
+        )
+        .parse_complete(input)
+    }
+
+    pub fn bytes(&self) -> impl Iterator<Item = u8> {
+        [
+            self.left_single,
+            self.right_single,
+            self.left_double,
+            self.right_double,
+            self.left_long,
+            self.right_long,
+            self.left_triple,
+            self.right_triple,
+        ]
+        .into_iter()
+        .flat_map(|button| button.bytes())
+    }
+}
+
+/// A 0-4 selection with no known display labels (the app's own `A3953PressSensVM.initData`
+/// pairs each value with a string resource ID rather than a literal name, and that string table
+/// wasn't decoded), sent with command `[0x04, 0x85]` (decompiled constant `Cmm2CmdData.L0`, used
+/// by the base `CmmBtCmdService.O(int)`, called from `Cmm2BtDeviceManager.g5(int)`, called from
+/// `A3953PressSensVM.setPressSensItem`).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PressSensitivity(pub u8);
+
+impl PressSensitivity {
+    pub fn take<'a, E: ParseError<&'a [u8]> + ContextError<&'a [u8]>>(
+        input: &'a [u8],
+    ) -> IResult<&'a [u8], Self, E> {
+        map(le_u8, |value: u8| Self(value.min(4))).parse_complete(input)
+    }
+
+    pub fn bytes(&self) -> [u8; 1] {
+        [self.0.min(4)]
+    }
+}

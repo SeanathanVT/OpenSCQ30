@@ -31,6 +31,9 @@ where
             SoundModesSetting::AmbientSoundMode => Some(Setting::select_from_enum_all_variants(
                 sound_modes.ambient_sound_mode,
             )),
+            SoundModesSetting::WindNoiseSuppression => Some(Setting::Toggle {
+                value: sound_modes.wind_noise.is_suppression_enabled,
+            }),
         }
     }
 
@@ -47,6 +50,10 @@ where
             SoundModesSetting::AmbientSoundMode => {
                 let sound_modes: &mut SoundModes = state.get_mut();
                 sound_modes.ambient_sound_mode = value.try_as_enum_variant()?;
+            }
+            SoundModesSetting::WindNoiseSuppression => {
+                let sound_modes: &mut SoundModes = state.get_mut();
+                sound_modes.wind_noise.is_suppression_enabled = value.try_as_bool()?;
             }
         }
         Ok(())

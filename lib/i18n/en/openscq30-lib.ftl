@@ -208,6 +208,7 @@ wearing-tone = Wearing Tone
 touch-lock = Touch Lock
 low-battery-prompt = Low Battery Prompt
 wearing-detection = Wearing Detection
+press-sensitivity = Press Sensitivity
 voice-prompt = Voice Prompt
 side-tone = Side Tone
 dolby-audio = Dolby Audio
