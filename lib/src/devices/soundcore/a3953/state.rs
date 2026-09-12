@@ -3,8 +3,9 @@ use openscq30_lib_macros::Has;
 use crate::devices::soundcore::{
     a3953,
     common::structures::{
-        AutoPowerOff, CaseBatteryLevel, DualBattery, DualFirmwareVersion, Ldac, LowBatteryPrompt,
-        SerialNumber, TwsStatus, WearingDetection, WearingTone,
+        AutoPowerOff, CaseBatteryLevel, CommonEqualizerConfiguration, CustomHearId, DualBattery,
+        DualFirmwareVersion, Ldac, LowBatteryPrompt, SerialNumber, TwsStatus, WearingDetection,
+        WearingTone,
     },
 };
 
@@ -14,6 +15,9 @@ pub struct A3953State {
     battery: DualBattery,
     dual_firmware_version: DualFirmwareVersion,
     serial_number: SerialNumber,
+    equalizer_configuration: CommonEqualizerConfiguration<2, 10>,
+    is_hear_id_initialized: a3953::structures::IsHearIdInitialized,
+    hear_id: CustomHearId<2, 10>,
     sound_modes: a3953::structures::SoundModes,
     wearing_detection: WearingDetection,
     case_battery_level: CaseBatteryLevel,
@@ -34,7 +38,9 @@ impl From<a3953::packets::A3953StateUpdatePacket> for A3953State {
             battery,
             dual_firmware_version,
             serial_number,
-            unknown_before_custom_length: _,
+            equalizer_configuration,
+            is_hear_id_initialized,
+            hear_id,
             custom_length: _,
             button_config: _,
             unknown_gap: _,
@@ -64,6 +70,9 @@ impl From<a3953::packets::A3953StateUpdatePacket> for A3953State {
             battery,
             dual_firmware_version,
             serial_number,
+            equalizer_configuration,
+            is_hear_id_initialized,
+            hear_id,
             sound_modes,
             wearing_detection,
             case_battery_level,

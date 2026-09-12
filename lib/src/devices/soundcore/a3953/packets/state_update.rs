@@ -14,9 +14,9 @@ use crate::devices::soundcore::{
         macros::state_update_packet_module,
         packet::{self, inbound::FromPacketBody, outbound::ToPacket},
         structures::{
-            AmbientSoundModeCycle, AutoPowerOff, CaseBatteryLevel, DualBattery,
-            DualFirmwareVersion, Ldac, LowBatteryPrompt, SerialNumber, TwsStatus, WearingDetection,
-            WearingTone,
+            AmbientSoundModeCycle, AutoPowerOff, CaseBatteryLevel, CommonEqualizerConfiguration,
+            CustomHearId, DualBattery, DualFirmwareVersion, Ldac, LowBatteryPrompt, SerialNumber,
+            TwsStatus, WearingDetection, WearingTone,
         },
     },
 };
@@ -27,8 +27,31 @@ use crate::devices::soundcore::{
 /// packet body (there, `bArr[9..]`; here, `input[0..]`, i.e. every cited `bArr` index there is this
 /// packet's index minus 9).
 ///
-/// - `unknown_before_custom_length` (`bArr[41..112]`, 71 bytes): read by `R0` for EQ index/type,
-///   custom EQ values, and Hear ID data, none of which are implemented here yet.
+/// - `equalizer_configuration` (`bArr[41..63]`, 22 bytes: preset id, then 2×10 raw band bytes) and
+///   `is_hear_id_initialized`/`hear_id` (`bArr[63..112]`, 49 bytes) together replace what was
+///   previously an opaque 71-byte blob (`bArr[41..112]`). Traced via `A3953AnalysisService.R0`:
+///   `bArr[41..43]` (preset id, u16 LE) and `I0(bArr, 43)` (left band values, `bArr[43..53]`) feed
+///   `cmm2BtDeviceInfo.getEqDetails()`; `bArr[53..63]` (right band values) is present in the packet
+///   but not read by `R0` itself (it duplicates the left curve for display), though the outbound
+///   write path does send both channels distinctly (see below), so both are parsed here for full
+///   fidelity. `bArr[63]` is `m3`, checked by `R0` against `Cmm2CmdData.x`/`y` (255/254) to decide
+///   `hasHearIdData`; see `a3953::structures::IsHearIdInitialized` for the citation.
+///   `bArr[64..112]` matches `common::structures::CustomHearId::take_with_music_genre_at_end` byte
+///   for byte: switch (`bArr[64]`), left+right Hear ID values (`q1(bArr, 65)`, `bArr[65..85]`, right
+///   half unread by `R0` same as the EQ values), Hear ID time (`bArr[85..89]`, big-endian, matches
+///   `BytesUtil.I(_, true)`), Hear ID type (`bArr[89]`), left+right custom Hear ID values
+///   (`q1(bArr, 90)`, `bArr[90..110]`, right half unread; `bArr[90]` doubles as `R0`'s `m5`
+///   "has custom data" sentinel check, since the placeholder curve's position 0 byte is always the
+///   same 255 sentinel), and finally `bArr[110..112]` (`H2`, "hearIdEqIndex", read little-endian via
+///   `BytesUtil.H`), which lines up with `CustomHearId`'s trailing `favorite_music_genre` slot.
+///   Cross-checked against this project's own `a3955` device, which uses the identical wire format
+///   (down to the DRC coefficients in `common::structures::VolumeAdjustments::apply_drc`, which are
+///   a verbatim transcription of this app's own `HearId2Utils.b`) for the same command family
+///   (`[0x03, 0x87]`/`[0x03, 0x86]`, decompiled constants `Cmm2CmdData.p1`/`o1`). Custom EQ write is
+///   implemented (see `a3953::packets::set_equalizer_configuration`); Hear ID itself is not exposed
+///   for editing (same reasoning as `a3947`/`a3955`: the write path always disables it so that the
+///   custom EQ being applied takes effect), so `hear_id`'s only purpose here is round-tripping
+///   whatever the device already has stored, unchanged, when writing a new custom EQ.
 /// - `custom_length` (`bArr[112]`, `R0`'s local variable `m6`, logged as `"customLength"`): used to
 ///   compute every following offset as `custom_length + N`. In the one real capture this is built
 ///   from, its value is 18.
@@ -110,7 +133,9 @@ pub struct A3953StateUpdatePacket {
     pub battery: DualBattery,
     pub dual_firmware_version: DualFirmwareVersion,
     pub serial_number: SerialNumber,
-    pub unknown_before_custom_length: Vec<u8>,
+    pub equalizer_configuration: CommonEqualizerConfiguration<2, 10>,
+    pub is_hear_id_initialized: a3953::structures::IsHearIdInitialized,
+    pub hear_id: CustomHearId<2, 10>,
     pub custom_length: u8,
     pub button_config: a3953::structures::ButtonConfig,
     pub unknown_gap: Vec<u8>,
@@ -142,9 +167,9 @@ impl Default for A3953StateUpdatePacket {
             battery: Default::default(),
             dual_firmware_version: Default::default(),
             serial_number: Default::default(),
-            // sized to match the fixed-width `take()` calls in `FromPacketBody::take` below, so
-            // that `Self::default().to_packet()` round-trips through `take()` correctly
-            unknown_before_custom_length: vec![0; 71],
+            equalizer_configuration: Default::default(),
+            is_hear_id_initialized: Default::default(),
+            hear_id: Default::default(),
             custom_length: 0,
             button_config: Default::default(),
             unknown_gap: Vec::new(),
@@ -183,7 +208,13 @@ impl FromPacketBody for A3953StateUpdatePacket {
             let (input, battery) = DualBattery::take(input)?;
             let (input, dual_firmware_version) = DualFirmwareVersion::take(input)?;
             let (input, serial_number) = SerialNumber::take(input)?;
-            let (input, unknown_before_custom_length) = take(71usize)(input)?;
+            let (input, equalizer_configuration) =
+                CommonEqualizerConfiguration::<2, 10>::take(input)?;
+            let (input, hear_id_status) = le_u8(input)?;
+            let is_hear_id_initialized = a3953::structures::IsHearIdInitialized(
+                hear_id_status != 255 && hear_id_status != 254,
+            );
+            let (input, hear_id) = CustomHearId::<2, 10>::take_with_music_genre_at_end(input)?;
             let (input, custom_length) = le_u8(input)?;
             let (input, button_config) = a3953::structures::ButtonConfig::take(input)?;
             let gap_len = (custom_length as usize).saturating_sub(18);
@@ -220,7 +251,9 @@ impl FromPacketBody for A3953StateUpdatePacket {
                     battery,
                     dual_firmware_version,
                     serial_number,
-                    unknown_before_custom_length: unknown_before_custom_length.to_vec(),
+                    equalizer_configuration,
+                    is_hear_id_initialized,
+                    hear_id,
                     custom_length,
                     button_config,
                     unknown_gap: unknown_gap.to_vec(),
@@ -264,7 +297,13 @@ impl ToPacket for A3953StateUpdatePacket {
             .chain(self.battery.bytes())
             .chain(self.dual_firmware_version.bytes())
             .chain(self.serial_number.to_string().into_bytes())
-            .chain(self.unknown_before_custom_length.iter().copied())
+            .chain(self.equalizer_configuration.bytes())
+            .chain(iter::once(if self.is_hear_id_initialized.0 {
+                0
+            } else {
+                255
+            }))
+            .chain(self.hear_id.bytes_with_music_genre_at_end())
             .chain(iter::once(self.custom_length))
             .chain(self.button_config.bytes())
             .chain(self.unknown_gap.iter().copied())

@@ -1,15 +1,46 @@
 use openscq30_lib_has::Has;
 
-use crate::devices::soundcore::common::device::SoundcoreDeviceBuilder;
-
-use super::structures::{
-    AmbientSoundPrompt, PressSensitivity, SoundModes, SpatialAudio, SupportTwoConnections,
+use crate::devices::soundcore::common::{
+    self, device::SoundcoreDeviceBuilder, modules::equalizer::EqualizerModuleSettings,
+    structures::TwsStatus,
 };
 
+use super::structures::{
+    AmbientSoundPrompt, IsHearIdInitialized, PressSensitivity, SoundModes, SpatialAudio,
+    SupportTwoConnections,
+};
+
+mod equalizer;
 mod misc_toggles;
 mod press_sensitivity;
 mod sound_modes;
 mod spatial_audio;
+
+impl<StateType> SoundcoreDeviceBuilder<StateType>
+where
+    StateType: Has<TwsStatus>
+        + Has<common::structures::CommonEqualizerConfiguration<2, 10>>
+        + Has<common::structures::CustomHearId<2, 10>>
+        + Has<IsHearIdInitialized>
+        + Send
+        + Sync
+        + Clone
+        + 'static,
+{
+    pub async fn a3953_equalizer<const VISIBLE_BANDS: usize, const PRESET_BANDS: usize>(
+        &mut self,
+        settings: EqualizerModuleSettings<VISIBLE_BANDS, PRESET_BANDS, -120, 134, 1>,
+    ) {
+        let packet_io = self.packet_io_controller().clone();
+        let database = self.database();
+        let device_model = self.device_model();
+        let change_notify = self.change_notify();
+
+        self.module_collection()
+            .add_a3953_equalizer(packet_io, database, device_model, change_notify, settings)
+            .await;
+    }
+}
 
 impl<StateType> SoundcoreDeviceBuilder<StateType>
 where

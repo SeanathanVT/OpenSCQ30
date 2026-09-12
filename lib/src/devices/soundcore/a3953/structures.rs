@@ -90,20 +90,92 @@ impl ToPacketBody for SoundModes {
     }
 }
 
+/// The behavior a button press is mapped to. IDs and names come from
+/// `com.soundcore.control.utils.DeviceInfoUtil.t(String)`, a `cmdName` (e.g.
+/// `PushLogConstant.VALUAS_APP_CUSTOM_PLAY_PAUSE`) to wire-ID switch shared by this app's whole
+/// button-customization UI (not device-specific), and cross-checked against this device's own real
+/// capture: the single-press assignments decode to `PlayPause` (6) and the double-press assignments
+/// decode to `Next`/`AmbientSoundModeCycle` (3/4), all of which are named by this same switch.
+/// `TakePhotoOrTranslate` and `StartSleepOrColorfulLight` share one wire ID each between two
+/// differently-named `cmdName` constants in the decompiled source (`custom_take_photo`/
+/// `custom_translate` both map to 10; `custom_start_sleep`/`custom_color_ful_light` both fall
+/// through to the same `return 14`), so this project can't tell those two pairs apart from the wire
+/// value alone. IDs 7, 9, and 12 aren't produced by any `cmdName` in that switch, so they're left as
+/// `Unknown` rather than guessed at. No outbound command that writes a `ButtonAssignment` back was
+/// found anywhere in the decompiled source (confirmed absent from every `*AnalysisService`'s sibling
+/// `*CmdService` across every device family that uses `ControllerBtnModel`, not just this one), so
+/// this stays read-only.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonAction {
+    VolumeUp,
+    VolumeDown,
+    Previous,
+    Next,
+    AmbientSoundModeCycle,
+    VoiceAssistant,
+    PlayPause,
+    AncSwitch,
+    TakePhotoOrTranslate,
+    AskAnswer,
+    SwitchMode,
+    StartSleepOrColorfulLight,
+    #[default]
+    None,
+    Unknown(u8),
+}
+
+impl ButtonAction {
+    fn from_nibble(nibble: u8) -> Self {
+        match nibble {
+            0 => Self::VolumeUp,
+            1 => Self::VolumeDown,
+            2 => Self::Previous,
+            3 => Self::Next,
+            4 => Self::AmbientSoundModeCycle,
+            5 => Self::VoiceAssistant,
+            6 => Self::PlayPause,
+            8 => Self::AncSwitch,
+            10 => Self::TakePhotoOrTranslate,
+            11 => Self::AskAnswer,
+            13 => Self::SwitchMode,
+            14 => Self::StartSleepOrColorfulLight,
+            15 => Self::None,
+            other => Self::Unknown(other),
+        }
+    }
+
+    fn to_nibble(self) -> u8 {
+        match self {
+            Self::VolumeUp => 0,
+            Self::VolumeDown => 1,
+            Self::Previous => 2,
+            Self::Next => 3,
+            Self::AmbientSoundModeCycle => 4,
+            Self::VoiceAssistant => 5,
+            Self::PlayPause => 6,
+            Self::AncSwitch => 8,
+            Self::TakePhotoOrTranslate => 10,
+            Self::AskAnswer => 11,
+            Self::SwitchMode => 13,
+            Self::StartSleepOrColorfulLight => 14,
+            Self::None => 15,
+            Self::Unknown(nibble) => nibble,
+        }
+    }
+}
+
 /// One button press-type's (single/double/long/triple press, for one earbud) configuration, as
 /// read by `com.oceanwing.devicecmd.manager.product.a3953.A3953AnalysisService.G0`: two bytes,
 /// each nibble-packed as `(BytesUtil.G(byte), BytesUtil.K(byte))` = (high nibble, low nibble).
 /// `untws_*` fields apply when the earbud is used alone (not connected as a TWS pair); the
-/// unprefixed fields apply when TWS-connected. `action`/`untws_action` are raw 0-15 IDs; no
-/// enum mapping from ID to behavior (e.g. "volume up") was found anywhere in the decompiled
-/// source, so they're left as plain numbers rather than guessed at. No outbound command that
-/// writes this struct back was found either, so it's read-only for now.
+/// unprefixed fields apply when TWS-connected. See `ButtonAction` for what `action`/`untws_action`
+/// mean.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ButtonAssignment {
     pub untws_enabled: bool,
     pub enabled: bool,
-    pub untws_action: u8,
-    pub action: u8,
+    pub untws_action: ButtonAction,
+    pub action: ButtonAction,
 }
 
 impl ButtonAssignment {
@@ -113,8 +185,8 @@ impl ButtonAssignment {
         map((le_u8, le_u8), |(switch_byte, action_byte)| Self {
             untws_enabled: switch_byte >> 4 == 1,
             enabled: switch_byte & 0x0F == 1,
-            untws_action: action_byte >> 4,
-            action: action_byte & 0x0F,
+            untws_action: ButtonAction::from_nibble(action_byte >> 4),
+            action: ButtonAction::from_nibble(action_byte & 0x0F),
         })
         .parse_complete(input)
     }
@@ -122,7 +194,7 @@ impl ButtonAssignment {
     pub fn bytes(&self) -> [u8; 2] {
         [
             (u8::from(self.untws_enabled) << 4) | u8::from(self.enabled),
-            ((self.untws_action & 0x0F) << 4) | (self.action & 0x0F),
+            ((self.untws_action.to_nibble() & 0x0F) << 4) | (self.action.to_nibble() & 0x0F),
         ]
     }
 }
@@ -365,3 +437,15 @@ impl SupportTwoConnections {
         [u8::from(self.0)]
     }
 }
+
+/// Whether the device has ever recorded a Hear ID (personalized hearing profile) result. Read from
+/// the single byte immediately preceding the Hear ID block in the state update packet
+/// (`A3953AnalysisService.R0`'s `m3`, `bArr[63]`), which `R0` treats as "no data" when it equals
+/// either `Cmm2CmdData.x` (`-1`/255) or `Cmm2CmdData.y` (`-2`/254); this project's sibling A3955
+/// device only checks the single-sentinel case, but A3953's own decompiled `R0` checks both, so both
+/// are checked here. This project doesn't expose Hear ID for editing (see `HearId` on this device's
+/// state), so the only use of this flag is deciding whether the equalizer write path needs to send
+/// the "uninitialized" sentinel bytes (`CmmBtCmdService.v5`, called through `A3953CmdService.c5`'s
+/// `z5`) or the real ones already stored on the device.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct IsHearIdInitialized(pub bool);
