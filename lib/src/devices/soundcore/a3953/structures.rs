@@ -388,33 +388,6 @@ impl Flag for AmbientSoundPrompt {
     }
 }
 
-// [0x0B,0x84] (Cmm2CmdData.E1/CmmBtCmdService.B0); single bit, not this project's full DualConnections
-// device-list feature
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct SupportTwoConnections(pub bool);
-
-impl SupportTwoConnections {
-    pub fn take<'a, E: ParseError<&'a [u8]> + ContextError<&'a [u8]>>(
-        input: &'a [u8],
-    ) -> IResult<&'a [u8], Self, E> {
-        map(take_bool, Self).parse_complete(input)
-    }
-
-    pub fn bytes(&self) -> [u8; 1] {
-        [u8::from(self.0)]
-    }
-}
-
-impl Flag for SupportTwoConnections {
-    fn get_bool(&self) -> bool {
-        self.0
-    }
-
-    fn set_bool(&mut self, value: bool) {
-        self.0 = value;
-    }
-}
-
 // bArr[63] (A3953AnalysisService.R0's m3); 255 or 254 = uninitialized (unlike a3955, which only
 // checks one sentinel). Determines whether the equalizer write path sends the "uninitialized"
 // sentinel bytes or the real hear id already stored on the device.

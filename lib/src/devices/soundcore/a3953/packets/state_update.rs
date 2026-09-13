@@ -12,7 +12,7 @@ use crate::devices::soundcore::{
     a3953::{self, state::A3953State},
     common::{
         macros::state_update_packet_module,
-        packet::{self, inbound::FromPacketBody, outbound::ToPacket},
+        packet::{self, inbound::FromPacketBody, outbound::ToPacket, parsing::take_bool},
         structures::{
             AmbientSoundModeCycle, AutoPowerOff, CaseBatteryLevel, CommonEqualizerConfiguration,
             CustomHearId, DualBattery, DualFirmwareVersion, Ldac, LowBatteryPrompt, SerialNumber,
@@ -40,7 +40,7 @@ pub struct A3953StateUpdatePacket {
     pub wearing_detection: WearingDetection,
     pub case_battery_level: CaseBatteryLevel,
     pub ldac: Ldac,
-    pub support_two_connections: a3953::structures::SupportTwoConnections,
+    pub dual_connections_enabled: bool,
     pub auto_power_off: AutoPowerOff,
     pub wearing_tone: WearingTone,
     pub low_battery_prompt: LowBatteryPrompt,
@@ -84,8 +84,7 @@ impl FromPacketBody for A3953StateUpdatePacket {
             let (input, case_battery_level) = CaseBatteryLevel::take(input)?;
             let (input, _unknown_bass_up) = take(1usize)(input)?; // "bass up" toggle, no write command found
             let (input, ldac) = Ldac::take(input)?;
-            let (input, support_two_connections) =
-                a3953::structures::SupportTwoConnections::take(input)?;
+            let (input, dual_connections_enabled) = take_bool(input)?; // same [0x0B,0x84] toggle as common::modules::dual_connections
             let (input, auto_power_off) = AutoPowerOff::take(input)?;
             let (input, _unknown_hear_id_volume_db) = take(1usize)(input)?; // hear id feature, not implemented
             let (input, wearing_tone) = WearingTone::take(input)?; // app calls this "in ear beep"
@@ -120,7 +119,7 @@ impl FromPacketBody for A3953StateUpdatePacket {
                     wearing_detection,
                     case_battery_level,
                     ldac,
-                    support_two_connections,
+                    dual_connections_enabled,
                     auto_power_off,
                     wearing_tone,
                     low_battery_prompt,
@@ -168,7 +167,7 @@ impl ToPacket for A3953StateUpdatePacket {
             .chain(self.case_battery_level.bytes())
             .chain(iter::once(0)) // unknown bass up
             .chain(self.ldac.bytes())
-            .chain(self.support_two_connections.bytes())
+            .chain(iter::once(self.dual_connections_enabled.into()))
             .chain(self.auto_power_off.bytes())
             .chain(iter::once(0)) // unknown hear id volume db
             .chain(self.wearing_tone.bytes())

@@ -3,10 +3,13 @@ use std::collections::HashMap;
 use crate::devices::soundcore::{
     a3953::{packets::A3953StateUpdatePacket, state::A3953State},
     common::{
-        device::fetch_state_from_state_update_packet,
+        self,
         macros::soundcore_device,
         modules::{auto_power_off::AutoPowerOffDuration, equalizer::common_settings_type_2},
-        packet::outbound::{RequestState, ToPacket},
+        packet::{
+            inbound::TryToPacket,
+            outbound::{RequestState, ToPacket},
+        },
     },
 };
 
@@ -16,11 +19,15 @@ mod state;
 pub mod structures;
 
 // Battery, dual firmware version, serial number, ambient sound mode, wind noise suppression, wear
-// detection, case battery level, LDAC, dual-connection support, auto power off, wearing tone (the
-// app calls it "in ear beep"), low battery prompt, ambient sound prompt, spatial audio, press
-// sensitivity, and custom equalizer have all been reverse-engineered against the official app's
-// decompiled source (see packets::state_update, structures.rs,
-// packets::set_equalizer_configuration). Button configuration is parsed, and each assignment's
+// detection, case battery level, LDAC, auto power off, wearing tone (the app calls it "in ear
+// beep"), low battery prompt, ambient sound prompt, spatial audio, press sensitivity, and custom
+// equalizer have all been reverse-engineered against the official app's decompiled source (see
+// packets::state_update, structures.rs, packets::set_equalizer_configuration). Dual connections
+// (multi-device pairing list) reuses this project's shared common::modules::dual_connections
+// wholesale: the enabled bit is the same command A3953CmdService.B0 sends
+// ([0x0B,0x84]/Cmm2CmdData.E1), and a real capture confirmed the [0x0B,0x01] device list
+// request/response matches common::structures::DualConnectionsDevice byte for byte. Button
+// configuration is parsed, and each assignment's
 // action ID is now decoded to a name (see structures::ButtonAction), but it's still not exposed as
 // a setting: no outbound command that writes a button assignment back was found anywhere in the
 // decompiled source, for this device or any other device family that shares the same
@@ -34,7 +41,19 @@ pub mod structures;
 soundcore_device!(
     A3953State,
     async |packet_io| {
-        fetch_state_from_state_update_packet::<A3953State, A3953StateUpdatePacket>(packet_io).await
+        let state_update_packet: A3953StateUpdatePacket = packet_io
+            .send_with_response(&RequestState.to_packet())
+            .await?
+            .try_to_packet()?;
+        let dual_connections_devices = if state_update_packet.dual_connections_enabled {
+            common::modules::dual_connections::take_dual_connection_devices(&packet_io).await?
+        } else {
+            Vec::new()
+        };
+        Ok(A3953State::new(
+            state_update_packet,
+            dual_connections_devices,
+        ))
     },
     async |builder| {
         builder.module_collection().add_state_update();
@@ -53,6 +72,7 @@ soundcore_device!(
         builder.wearing_tone();
         builder.low_battery_prompt();
         builder.a3953_misc_toggles();
+        builder.dual_connections();
         builder.a3953_spatial_audio();
         builder.a3953_press_sensitivity();
         builder.a3953_equalizer(common_settings_type_2()).await;
@@ -123,7 +143,7 @@ mod tests {
             (SettingId::PressSensitivity, 0.into()),
             (SettingId::LowBatteryPrompt, true.into()),
             (SettingId::AmbientSoundPrompt, true.into()),
-            (SettingId::SupportTwoConnections, false.into()),
+            (SettingId::DualConnections, false.into()),
             (SettingId::SpatialAudio, false.into()),
             (SettingId::SpatialAudioMode, "Music".into()),
             (SettingId::SpatialAudioMusicMode, "Fixed".into()),
@@ -268,5 +288,61 @@ mod tests {
         .await;
 
         device.assert_setting_values([(SettingId::AmbientSoundMode, "Transparency".into())]);
+    }
+
+    // Real capture: two unsolicited [0x0B, 0x01] packets pushed by the device after connecting,
+    // confirming A3953 uses the same wire format as common::packet::inbound::DualConnectionsDevicePacket.
+    // The second packet's lone entry is padded 2 bytes short of what its own length byte implies,
+    // which is what motivated DualConnectionsDevice::take's clamp to available input.
+    #[test]
+    fn parses_real_dual_connections_device_list_capture() {
+        use nom_language::error::VerboseError;
+
+        use crate::devices::soundcore::common::packet::inbound::{
+            DualConnectionsDevicePacket, FromPacketBody,
+        };
+
+        let packet_1 = [
+            2, 1, 40, 1, 175, 149, 25, 87, 47, 132, 83, 101, 97, 110, 226, 128, 153, 115, 32, 77,
+            97, 99, 66, 111, 111, 107, 32, 80, 114, 111, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 40, 0,
+            117, 224, 41, 200, 87, 96, 83, 101, 97, 110, 226, 128, 153, 115, 32, 105, 80, 104, 111,
+            110, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 40, 0, 113, 159, 29, 98,
+            59, 28, 78, 111, 107, 105, 97, 32, 50, 55, 56, 48, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 40, 0, 198, 14, 117, 171, 169, 60, 78, 105, 110, 116,
+            101, 110, 100, 111, 32, 83, 119, 105, 116, 99, 104, 32, 50, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0,
+        ];
+        let (remaining_1, parsed_1) =
+            DualConnectionsDevicePacket::take::<VerboseError<_>>(&packet_1).unwrap();
+        assert_eq!(remaining_1.len(), 0);
+        assert_eq!(parsed_1.total_packets, 2);
+        assert_eq!(parsed_1.current_packet_index, 1);
+        let names: Vec<_> = parsed_1.devices.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "Sean\u{2019}s MacBook Pro",
+                "Sean\u{2019}s iPhone",
+                "Nokia 2780",
+                "Nintendo Switch 2",
+            ]
+        );
+        assert!(parsed_1.devices[0].is_connected);
+        assert!(!parsed_1.devices[1].is_connected);
+        assert!(!parsed_1.devices[2].is_connected);
+        assert!(!parsed_1.devices[3].is_connected);
+
+        let packet_2 = [
+            2, 2, 40, 0, 96, 137, 137, 109, 73, 184, 83, 101, 97, 110, 226, 128, 153, 115, 32, 105,
+            80, 97, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let (remaining_2, parsed_2) =
+            DualConnectionsDevicePacket::take::<VerboseError<_>>(&packet_2).unwrap();
+        assert_eq!(remaining_2.len(), 0);
+        assert_eq!(parsed_2.total_packets, 2);
+        assert_eq!(parsed_2.current_packet_index, 2);
+        assert_eq!(parsed_2.devices.len(), 1);
+        assert_eq!(parsed_2.devices[0].name, "Sean\u{2019}s iPad");
+        assert!(!parsed_2.devices[0].is_connected);
     }
 }

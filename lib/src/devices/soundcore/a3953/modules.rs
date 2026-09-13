@@ -7,7 +7,6 @@ use crate::devices::soundcore::common::{
 
 use super::structures::{
     AmbientSoundPrompt, IsHearIdInitialized, PressSensitivity, SoundModes, SpatialAudio,
-    SupportTwoConnections,
 };
 
 mod equalizer;
@@ -66,7 +65,7 @@ where
 
 impl<StateType> SoundcoreDeviceBuilder<StateType>
 where
-    StateType: Has<AmbientSoundPrompt> + Has<SupportTwoConnections> + Send + Sync + Clone + 'static,
+    StateType: Has<AmbientSoundPrompt> + Send + Sync + Clone + 'static,
 {
     pub fn a3953_misc_toggles(&mut self) {
         let packet_io_controller = self.packet_io_controller().clone();
