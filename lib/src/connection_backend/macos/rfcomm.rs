@@ -12,7 +12,7 @@ use std::{
 use async_trait::async_trait;
 use macaddr::MacAddr6;
 use objc2::{AnyThread, DefinedClass, define_class, rc::Retained, runtime::AnyObject};
-use objc2_core_foundation::{CFRunLoop, CFRunLoopRunResult, CFTimeInterval, kCFRunLoopDefaultMode};
+use objc2_core_foundation::{CFRunLoop, CFTimeInterval, kCFRunLoopDefaultMode};
 use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSString};
 use objc2_io_bluetooth::{
     BluetoothRFCOMMChannelID, BluetoothSDPServiceAttributeID, IOBluetoothDevice,
@@ -39,15 +39,15 @@ const IO_RETURN_NOT_OPEN: c_int = 0xE00002CDu32 as c_int;
 const WRITE_NOT_OPEN_RETRIES: u32 = 50;
 const WRITE_NOT_OPEN_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
 
-const SDP_QUERY_TIMEOUT_SECONDS: CFTimeInterval = 10.0;
+const SDP_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 // CFRunLoopRun() returns immediately if nothing is scheduled at the moment it's called, so the
 // connection's event loop re-enters it in short bursts instead of once indefinitely.
 const RFCOMM_EVENT_POLL_SECONDS: CFTimeInterval = 0.1;
 
-// How long the connection thread waits for a write request before falling back to pumping
-// the run loop, so incoming delegate callbacks keep getting delivered between writes.
-const WRITE_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
+// How long the connection thread waits for a write request before falling back to pumping the
+// run loop; bounds how stale an unpumped inbound callback can get, so kept short.
+const WRITE_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(10);
 
 #[derive(Default)]
 pub struct MacosRfcommBackend;
@@ -248,21 +248,24 @@ fn perform_sdp_query(device: &IOBluetoothDevice) -> connection::Result<()> {
         });
     }
 
-    // Bounded so a delegate callback that never arrives can't hang the connection forever.
-    let run_result =
-        unsafe { CFRunLoop::run_in_mode(kCFRunLoopDefaultMode, SDP_QUERY_TIMEOUT_SECONDS, false) };
-    if run_result == CFRunLoopRunResult::TimedOut {
-        return Err(connection::Error::TimedOut {
-            action: "SDP query",
-        });
-    }
-
-    match done_receiver.recv() {
+    // sdpQueryComplete: is delivered on the process main thread (pumped continuously by
+    // cli/src/main.rs's run loop), not this thread, so a run loop pumped here would never see
+    // it; recv_timeout on the plain mpsc channel is what actually bounds the wait.
+    match done_receiver.recv_timeout(SDP_QUERY_TIMEOUT) {
         Ok(0) => Ok(()),
-        _ => Err(connection::Error::DeviceNotFound {
+        Ok(_) => Err(connection::Error::DeviceNotFound {
             source: None,
             location: Location::caller(),
         }),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(connection::Error::TimedOut {
+            action: "SDP query",
+        }),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err(connection::Error::DeviceNotFound {
+                source: None,
+                location: Location::caller(),
+            })
+        }
     }
 }
 
@@ -281,9 +284,6 @@ define_class!(
         #[unsafe(method(sdpQueryComplete:status:))]
         fn sdp_query_complete(&self, _device: Option<&IOBluetoothDevice>, status: c_int) {
             let _ = self.ivars().done_sender.send(status);
-            if let Some(run_loop) = CFRunLoop::current() {
-                run_loop.stop();
-            }
         }
     }
 );
@@ -374,8 +374,17 @@ define_class!(
         ) {
             let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) }.to_vec();
             trace!("received packet: {bytes:?}");
-            if self.ivars().data_sender.blocking_send(bytes).is_err() {
-                debug!("read_channel receiver is closed");
+            // This callback runs on the connection thread, which also services writes and pumps
+            // the run loop, so blocking here would freeze the whole connection if the reader
+            // ever stalls: drop the packet instead of waiting for buffer space.
+            match self.ivars().data_sender.try_send(bytes) {
+                Ok(()) => {}
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    debug!("read_channel buffer full, dropping packet");
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    debug!("read_channel receiver is closed");
+                }
             }
         }
 
@@ -540,10 +549,9 @@ fn run_connection_thread(
 
     let _ = open_result_sender.send(Ok(()));
 
-    // The channel internally uses an NSPort (IOBluetoothRFCOMMChannel conforms to
-    // NSPortDelegate), and NSPort events are dispatched to the run loop of the thread that
-    // first performs I/O on the channel. So all writes and run-loop pumping must happen on this
-    // thread, which guarantees delegate callbacks (rfcommChannelData etc.) get dispatched here.
+    // Empirically, channel callbacks (rfcommChannelData etc.) are delivered on whichever thread
+    // pumps the run loop here, unlike SDP query callbacks which need the real main thread
+    // (see perform_sdp_query) — so writes and pumping stay on this dedicated thread.
     debug!("channel opened, running write/pump loop");
 
     // Service any write requests queued while the channel was still opening.

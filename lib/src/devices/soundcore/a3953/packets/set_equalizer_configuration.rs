@@ -1,15 +1,7 @@
 use crate::devices::soundcore::common::{self, packet, structures::OptionalVolumeAdjustmentsExt};
 
-/// Command `[0x03, 0x87]` (decompiled constant `Cmm2CmdData.p1`), built by
-/// `CmmBtCmdService.v5`, reached from `A3953CmdService.c5()` returning `true`, which routes
-/// `CmmBtCmdService.d4` to `z5` (which always applies DRC to the plain custom EQ values via `n5`,
-/// unconditionally on Hear ID state) and then to `v5` itself. Byte layout cross-checked against this
-/// project's own `a3955` device, which shares the identical wire format for the same command:
-/// preset id, then the Hear ID "favorite music genre"/"hearIdEqIndex" slot (same two bytes, meaning
-/// depends on `hear_id_type`), then the plain custom EQ values, then a 2-byte slot that's `0` when
-/// the device already has Hear ID data or `255` when it doesn't (`Cmm2CmdData.x`), then the Hear ID
-/// switch, Hear ID values, Hear ID time (big-endian), Hear ID type, custom Hear ID values, the DRC
-/// (`apply_drc`) transform of the plain custom EQ values, and a trailing always-zero byte.
+// [0x03,0x87] (Cmm2CmdData.p1/CmmBtCmdService.v5, reached via A3953CmdService.c5's z5); same wire
+// format as a3955's own set_equalizer_configuration.
 pub fn set_equalizer_configuration<
     const CHANNELS: usize,
     const BANDS: usize,

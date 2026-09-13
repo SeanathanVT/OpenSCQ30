@@ -8,19 +8,11 @@ use nom::{
 use crate::devices::soundcore::common::{
     modules::sound_modes_v2::ToPacketBody,
     packet::{self, inbound::FromPacketBody, parsing::take_bool},
-    structures::{AmbientSoundMode, WindNoise},
+    structures::{AmbientSoundMode, Flag, WindNoise},
 };
 
-/// Byte layout reverse-engineered from the official Soundcore Android app (com.oceanwing.soundcore
-/// v6.4.0-17), decompiling `com.oceanwing.devicecmd.manager.product.a3953.A3953CmdService.G1`
-/// (outbound, command `[0x06, 0x81]`) and `A3953AnalysisService.T2` (inbound, same byte range
-/// within the state update packet). `ambient_sound_mode` is validated to exactly {0,1,2} by
-/// `CmmBtCmdService.h()` before sending. `anc_option_manual` is clamped to 1-6 by
-/// `A3953CmdService.f()` on both read and write. `anc_option_auto`, `trans_option`,
-/// `anc_automation_mode`, and `anc_auto_sensitivity_level` are read as raw, unclamped bytes;
-/// `trans_option` is additionally clamped to 0-2 by `A3953CmdService.i()`, but only when sending.
-/// `wind_noise.is_detected` is read from the device but is never sent back (the app always writes
-/// only the suppression-enabled bit).
+// [0x06,0x81] outbound (A3953CmdService.G1) / A3953AnalysisService.T2 inbound; anc_option_manual
+// clamped 1-6, trans_option 0-2 (write only), other fields raw; wind_noise.is_detected never sent back
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SoundModes {
     pub ambient_sound_mode: AmbientSoundMode,
@@ -90,21 +82,10 @@ impl ToPacketBody for SoundModes {
     }
 }
 
-/// The behavior a button press is mapped to. IDs and names come from
-/// `com.soundcore.control.utils.DeviceInfoUtil.t(String)`, a `cmdName` (e.g.
-/// `PushLogConstant.VALUAS_APP_CUSTOM_PLAY_PAUSE`) to wire-ID switch shared by this app's whole
-/// button-customization UI (not device-specific), and cross-checked against this device's own real
-/// capture: the single-press assignments decode to `PlayPause` (6) and the double-press assignments
-/// decode to `Next`/`AmbientSoundModeCycle` (3/4), all of which are named by this same switch.
-/// `TakePhotoOrTranslate` and `StartSleepOrColorfulLight` share one wire ID each between two
-/// differently-named `cmdName` constants in the decompiled source (`custom_take_photo`/
-/// `custom_translate` both map to 10; `custom_start_sleep`/`custom_color_ful_light` both fall
-/// through to the same `return 14`), so this project can't tell those two pairs apart from the wire
-/// value alone. IDs 7, 9, and 12 aren't produced by any `cmdName` in that switch, so they're left as
-/// `Unknown` rather than guessed at. No outbound command that writes a `ButtonAssignment` back was
-/// found anywhere in the decompiled source (confirmed absent from every `*AnalysisService`'s sibling
-/// `*CmdService` across every device family that uses `ControllerBtnModel`, not just this one), so
-/// this stays read-only.
+// Wire IDs/names from DeviceInfoUtil.t(cmdName), cross-checked against a real capture (PlayPause=6,
+// Next/AmbientSoundModeCycle=3/4). 10 and 14 are each shared by two differently-named cmdNames
+// (TakePhotoOrTranslate, StartSleepOrColorfulLight), so those pairs can't be told apart from the wire
+// value alone; 7/9/12 are unused. Read-only: no write command found for any device family.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonAction {
     VolumeUp,
@@ -164,12 +145,8 @@ impl ButtonAction {
     }
 }
 
-/// One button press-type's (single/double/long/triple press, for one earbud) configuration, as
-/// read by `com.oceanwing.devicecmd.manager.product.a3953.A3953AnalysisService.G0`: two bytes,
-/// each nibble-packed as `(BytesUtil.G(byte), BytesUtil.K(byte))` = (high nibble, low nibble).
-/// `untws_*` fields apply when the earbud is used alone (not connected as a TWS pair); the
-/// unprefixed fields apply when TWS-connected. See `ButtonAction` for what `action`/`untws_action`
-/// mean.
+// Two nibble-packed bytes (A3953AnalysisService.G0); untws_* apply when used solo, unprefixed apply
+// when TWS-connected. See ButtonAction for what action/untws_action mean.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ButtonAssignment {
     pub untws_enabled: bool,
@@ -199,10 +176,8 @@ impl ButtonAssignment {
     }
 }
 
-/// Full 16-byte button configuration block (`bArr[113..129]` in `A3953AnalysisService.R0`, i.e.
-/// `bArr[113..129]`, passed to `G0` starting at `bArr[113]`). Field order (single, double, long,
-/// triple; left before right for each) matches the order `G0` populates them in, which is not the
-/// same order this project's other Soundcore devices use (they go single/double/triple/long).
+// bArr[113..129] (A3953AnalysisService.R0/G0); field order is single/double/long/triple, unlike
+// this project's other Soundcore devices (single/double/triple/long).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ButtonConfig {
     pub left_single: ButtonAssignment,
@@ -272,11 +247,7 @@ impl ButtonConfig {
     }
 }
 
-/// A 0-4 selection with no known display labels (the app's own `A3953PressSensVM.initData`
-/// pairs each value with a string resource ID rather than a literal name, and that string table
-/// wasn't decoded), sent with command `[0x04, 0x85]` (decompiled constant `Cmm2CmdData.L0`, used
-/// by the base `CmmBtCmdService.O(int)`, called from `Cmm2BtDeviceManager.g5(int)`, called from
-/// `A3953PressSensVM.setPressSensItem`).
+// [0x04,0x85] (Cmm2CmdData.L0/CmmBtCmdService.O); 0-4, no known display labels (string table wasn't decoded)
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PressSensitivity(pub u8);
 
@@ -292,10 +263,7 @@ impl PressSensitivity {
     }
 }
 
-/// Whether the spatial-audio "effect" is fixed in place or head-tracked, cited from the literal
-/// constants `A3953SpatialAudioVM.SPATIAL_MODE_FIXED = 1` / `SPATIAL_MODE_HEAD_TRACKING = 2`
-/// (confirmed against `A3953SpatialActivity`'s toggle handlers, which call
-/// `effectMode.set(1)`/`effectMode.set(2)`).
+// A3953SpatialAudioVM.SPATIAL_MODE_FIXED/HEAD_TRACKING = 1/2
 #[derive(
     Debug,
     Clone,
@@ -327,9 +295,7 @@ impl SpatialMode {
     }
 }
 
-/// The spatial-audio content-type selector, cited from the literal constants
-/// `A3953SpatialAudioVM.SOUND_MODE_MUSIC = 0` / `SOUND_MODE_MOVIE = 1` (confirmed against
-/// `A3953SpatialActivity`'s toggle handlers, which call `soundMode.set(0)`/`soundMode.set(1)`).
+// A3953SpatialAudioVM.SOUND_MODE_MUSIC/MOVIE = 0/1
 #[derive(
     Debug,
     Clone,
@@ -361,11 +327,7 @@ impl SpatialContentMode {
     }
 }
 
-/// Spatial audio (switch, effect mode, content mode), sent together as 3 bytes with command
-/// `[0x10, 0x81]` (decompiled constant `Cmm2CmdData.u2`, built by `CmmBtCmdService.b4`, called from
-/// `Cmm2BtDeviceManager.T6`, called from `A3953SpatialAudioVM.setSpatialAudioFun`). Byte order
-/// (switch, effect mode, content mode) matches `A3953AnalysisService.R0`'s read order exactly
-/// (`spatialSwitch`, `spatialEffectMode`, `spatialSoundMode`).
+// [0x10,0x81] (Cmm2CmdData.u2/CmmBtCmdService.b4); byte order matches A3953AnalysisService.R0's read order
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SpatialAudio {
     pub is_enabled: bool,
@@ -400,9 +362,7 @@ impl SpatialAudio {
     }
 }
 
-/// Sent with command `[0x10, 0x83]` (decompiled constant `Cmm2CmdData.w2`, built by
-/// `CmmBtCmdService.e1`, called from `Cmm2BtDeviceManager.v4`, called from
-/// `A3953PromptVM.setAmbientChangeSwitch`).
+// [0x10,0x83] (Cmm2CmdData.w2/CmmBtCmdService.e1)
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct AmbientSoundPrompt(pub bool);
 
@@ -418,11 +378,18 @@ impl AmbientSoundPrompt {
     }
 }
 
-/// Lets the earbuds stay connected to two phones/devices at once (labeled "SupportTwoCnnSwitch" in
-/// the decompiled bean, toggled from the device list screen). Sent with command `[0x0B, 0x84]`
-/// (decompiled constant `Cmm2CmdData.E1`, built by `CmmBtCmdService.B0`, called from
-/// `Cmm2BtDeviceManager.a7`, called from `A3952DeviceListVM.sendDeviceListSwitchCmd`, the shared
-/// device-list view model this device's `A3953DeviceListActivity` reuses).
+impl Flag for AmbientSoundPrompt {
+    fn get_bool(&self) -> bool {
+        self.0
+    }
+
+    fn set_bool(&mut self, value: bool) {
+        self.0 = value;
+    }
+}
+
+// [0x0B,0x84] (Cmm2CmdData.E1/CmmBtCmdService.B0); single bit, not this project's full DualConnections
+// device-list feature
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SupportTwoConnections(pub bool);
 
@@ -438,14 +405,18 @@ impl SupportTwoConnections {
     }
 }
 
-/// Whether the device has ever recorded a Hear ID (personalized hearing profile) result. Read from
-/// the single byte immediately preceding the Hear ID block in the state update packet
-/// (`A3953AnalysisService.R0`'s `m3`, `bArr[63]`), which `R0` treats as "no data" when it equals
-/// either `Cmm2CmdData.x` (`-1`/255) or `Cmm2CmdData.y` (`-2`/254); this project's sibling A3955
-/// device only checks the single-sentinel case, but A3953's own decompiled `R0` checks both, so both
-/// are checked here. This project doesn't expose Hear ID for editing (see `HearId` on this device's
-/// state), so the only use of this flag is deciding whether the equalizer write path needs to send
-/// the "uninitialized" sentinel bytes (`CmmBtCmdService.v5`, called through `A3953CmdService.c5`'s
-/// `z5`) or the real ones already stored on the device.
+impl Flag for SupportTwoConnections {
+    fn get_bool(&self) -> bool {
+        self.0
+    }
+
+    fn set_bool(&mut self, value: bool) {
+        self.0 = value;
+    }
+}
+
+// bArr[63] (A3953AnalysisService.R0's m3); 255 or 254 = uninitialized (unlike a3955, which only
+// checks one sentinel). Determines whether the equalizer write path sends the "uninitialized"
+// sentinel bytes or the real hear id already stored on the device.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct IsHearIdInitialized(pub bool);

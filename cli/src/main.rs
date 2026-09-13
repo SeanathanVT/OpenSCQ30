@@ -24,7 +24,7 @@ async fn main() -> ExitCode {
 #[cfg(target_os = "macos")]
 fn main() -> ExitCode {
     let (exit_code_sender, exit_code_receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let join_handle = std::thread::spawn(move || {
         let runtime = tokio::runtime::Runtime::new().expect("failed to start tokio runtime");
         let _ = exit_code_sender.send(runtime.block_on(run()));
     });
@@ -32,16 +32,28 @@ fn main() -> ExitCode {
     loop {
         match exit_code_receiver.try_recv() {
             Ok(code) => return code,
-            // the worker thread panicked before sending a result
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => return ExitCode::FAILURE,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                // The worker thread panicked before sending a result (the panic hook already
+                // printed it). Match the exit code Rust's default runtime uses when the real
+                // main thread panics, since the actual work here runs on a worker thread instead.
+                return match join_handle.join() {
+                    Ok(()) => ExitCode::FAILURE,
+                    Err(_) => ExitCode::from(101),
+                };
+            }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
-        unsafe {
+        let result = unsafe {
             objc2_core_foundation::CFRunLoop::run_in_mode(
                 objc2_core_foundation::kCFRunLoopDefaultMode,
                 0.1,
                 false,
-            );
+            )
+        };
+        // run_in_mode returns immediately, not after the given timeout, whenever nothing is
+        // scheduled on the run loop yet: sleep here so that doesn't turn into a busy spin.
+        if result == objc2_core_foundation::CFRunLoopRunResult::Finished {
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
 }

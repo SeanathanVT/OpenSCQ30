@@ -21,113 +21,9 @@ use crate::devices::soundcore::{
     },
 };
 
-/// Offsets below are reverse-engineered from the official Soundcore Android app
-/// (com.oceanwing.soundcore v6.4.0-17), decompiling
-/// `com.oceanwing.devicecmd.manager.product.a3953.A3953AnalysisService.R0`, which parses this same
-/// packet body (there, `bArr[9..]`; here, `input[0..]`, i.e. every cited `bArr` index there is this
-/// packet's index minus 9).
-///
-/// - `equalizer_configuration` (`bArr[41..63]`, 22 bytes: preset id, then 2×10 raw band bytes) and
-///   `is_hear_id_initialized`/`hear_id` (`bArr[63..112]`, 49 bytes) together replace what was
-///   previously an opaque 71-byte blob (`bArr[41..112]`). Traced via `A3953AnalysisService.R0`:
-///   `bArr[41..43]` (preset id, u16 LE) and `I0(bArr, 43)` (left band values, `bArr[43..53]`) feed
-///   `cmm2BtDeviceInfo.getEqDetails()`; `bArr[53..63]` (right band values) is present in the packet
-///   but not read by `R0` itself (it duplicates the left curve for display), though the outbound
-///   write path does send both channels distinctly (see below), so both are parsed here for full
-///   fidelity. `bArr[63]` is `m3`, checked by `R0` against `Cmm2CmdData.x`/`y` (255/254) to decide
-///   `hasHearIdData`; see `a3953::structures::IsHearIdInitialized` for the citation.
-///   `bArr[64..112]` matches `common::structures::CustomHearId::take_with_music_genre_at_end` byte
-///   for byte: switch (`bArr[64]`), left+right Hear ID values (`q1(bArr, 65)`, `bArr[65..85]`, right
-///   half unread by `R0` same as the EQ values), Hear ID time (`bArr[85..89]`, big-endian, matches
-///   `BytesUtil.I(_, true)`), Hear ID type (`bArr[89]`), left+right custom Hear ID values
-///   (`q1(bArr, 90)`, `bArr[90..110]`, right half unread; `bArr[90]` doubles as `R0`'s `m5`
-///   "has custom data" sentinel check, since the placeholder curve's position 0 byte is always the
-///   same 255 sentinel), and finally `bArr[110..112]` (`H2`, "hearIdEqIndex", read little-endian via
-///   `BytesUtil.H`), which lines up with `CustomHearId`'s trailing `favorite_music_genre` slot.
-///   Cross-checked against this project's own `a3955` device, which uses the identical wire format
-///   (down to the DRC coefficients in `common::structures::VolumeAdjustments::apply_drc`, which are
-///   a verbatim transcription of this app's own `HearId2Utils.b`) for the same command family
-///   (`[0x03, 0x87]`/`[0x03, 0x86]`, decompiled constants `Cmm2CmdData.p1`/`o1`). Custom EQ write is
-///   implemented (see `a3953::packets::set_equalizer_configuration`); Hear ID itself is not exposed
-///   for editing (same reasoning as `a3947`/`a3955`: the write path always disables it so that the
-///   custom EQ being applied takes effect), so `hear_id`'s only purpose here is round-tripping
-///   whatever the device already has stored, unchanged, when writing a new custom EQ.
-/// - `custom_length` (`bArr[112]`, `R0`'s local variable `m6`, logged as `"customLength"`): used to
-///   compute every following offset as `custom_length + N`. In the one real capture this is built
-///   from, its value is 18.
-/// - `button_config` (`bArr[113..129]`, 16 bytes): see `a3953::structures::ButtonConfig` for the
-///   per-byte citation. Parsed for round-trip fidelity but not exposed as a setting: no outbound
-///   command that writes it back was found, and no action-ID-to-behavior mapping was found either.
-/// - `unknown_gap`: `R0` computes the next two fields' positions as `custom_length + 111` and
-///   `custom_length + 112` (`bArr` indices). Converted to indices into this packet body (`- 9`) and
-///   relative to the end of `button_config` (`bArr[129]`, i.e. index 120 here), that leaves a gap of
-///   `custom_length - 18` unknown bytes whenever `custom_length != 18`; zero-length in the captures
-///   seen so far.
-/// - `ambient_sound_mode_cycle` (`bArr[custom_length + 111]`): bits read via `BytesUtil.J(b, 1..3)`
-///   into `cmm2BtDeviceInfo.setAncSelected/TransSelected/NormalSelected`, matching this project's
-///   existing `AmbientSoundModeCycle` bit layout exactly (bit0=noise_canceling, bit1=transparency,
-///   bit2=normal). No outbound command that sets these bits was found anywhere in the decompiled
-///   `CmmBtCmdService`/`A3953CmdService`, so this is parsed for round-trip fidelity only and not
-///   exposed as a setting.
-/// - `sound_modes` (`bArr[custom_length + 112 .. custom_length + 118]`, 6 bytes): see
-///   `a3953::structures::SoundModes` for the per-byte citation.
-/// - `unknown_personal_anc_test_info` (`bArr[custom_length + 118 .. custom_length + 124]`, 6 bytes):
-///   `PersonalAncInfo` test time (4 bytes, unix-ish timestamp), volume dB, and result index. Not
-///   implemented; both observed captures show the "unset" sentinel `255` for the latter two.
-/// - `wearing_detection` (`bArr[custom_length + 124]`): same command (`[0x01, 0x81]`, decompiled
-///   constant `Cmm2CmdData.J`, used by a base `CmmBtCmdService` method not overridden by
-///   `A3953CmdService`) as this project's shared `WearingDetection` flag. Cross-confirmed via the
-///   UI layer: `A3953MoreVM.sendWearTestCmd` → `Cmm2BtDeviceManager.y5` → `CmmBtCmdService.Y0` →
-///   same `Cmm2CmdData.J`, whose success callback (`dealSendWearDetectionCmd`) writes the result to
-///   `Cmm2BtDeviceInfo.setWearDetectionSwitch`, the same bean field `R0` reads here.
-/// - `unknown_wearing_status` (`bArr[custom_length + 125 .. custom_length + 127]`, 2 bytes): left
-///   and right earbud in-ear status, reported only, no corresponding set command exists.
-/// - `case_battery_level` (`bArr[custom_length + 127]`): read via the same `S()` clamp
-///   (`0..=9`) as the earbuds' own battery level (see a3953.rs's `dual_battery` comment for why
-///   that clamp alone isn't enough to conclude the true max level); displayed out of 5 to match
-///   the structurally identical A3947 pending a lower-charge capture.
-/// - `unknown_bass_up` (`bArr[custom_length + 128]`): a "bass up" toggle with no located set
-///   command.
-/// - `ldac` (`bArr[custom_length + 129]`): same command (`[0x01, 0xFF]`, decompiled constant
-///   `Cmm2CmdData.f16o0`) as this project's shared `Ldac` flag.
-/// - `support_two_connections` (`bArr[custom_length + 130]`): this project's `DualConnections`
-///   structure is a much larger feature (a whole device list with its own inbound/outbound
-///   packets), so this single bit (labeled `SupportTwoCnnSwitch` in the decompiled bean) gets its
-///   own minimal type instead. Command `[0x0B, 0x84]` (decompiled constant `Cmm2CmdData.E1`, built
-///   by `CmmBtCmdService.B0`), traced from `A3953DeviceListActivity` through the shared
-///   `A3952DeviceListVM.sendDeviceListSwitchCmd` → `Cmm2BtDeviceManager.a7`.
-/// - `auto_power_off` (`bArr[custom_length + 131 .. custom_length + 133]`, 2 bytes): same command
-///   (`[0x01, 0x86]`, decompiled constant `Cmm2CmdData.L`) and same
-///   `(bool is_enabled, u8 duration_index)` layout as this project's shared `AutoPowerOff`
-///   structure. The duration index is clamped to `0..=3` by `A3953AnalysisService.U2`. Confirmed,
-///   not just inferred from the clamp: `A3952PowerOffModel.A3953_POWER_OFF_OPTIONS` is a literal
-///   `{"10 ", "20 ", "30 ", "60 "}` array, selected specifically via
-///   `"A3953".equalsIgnoreCase(str)`, matching `AutoPowerOffDuration::ten_twenty_thirty_sixty()`
-///   exactly.
-/// - `unknown_hear_id_volume_db` (`bArr[custom_length + 133]`): part of the Hear ID feature, not
-///   implemented.
-/// - `wearing_tone` (`bArr[custom_length + 134]`): the app calls this field "in ear beep", but it
-///   uses the same command (`[0x01, 0x8C]`, decompiled constant `Cmm2CmdData.f17p0`) as this
-///   project's shared `WearingTone` flag, so it's reused under that name.
-/// - `low_battery_prompt` (`custom_length + 126` here; `bArr[custom_length + 135]` in `R0`'s own
-///   indexing): command `[0x10, 0x82]` (decompiled constant `Cmm2CmdData.v2`), matching this
-///   project's existing `SET_LOW_BATTERY_PROMPT_COMMAND` exactly; traced via
-///   `A3953PromptVM.setLowBatterySwitch` → `Cmm2BtDeviceManager.m6` → `CmmBtCmdService.F1`.
-/// - `ambient_sound_prompt` (`custom_length + 127` here): command `[0x10, 0x83]` (decompiled
-///   constant `Cmm2CmdData.w2`), see `a3953::structures::AmbientSoundPrompt` for the full citation.
-/// - `spatial_audio` (`custom_length + 128 .. custom_length + 131` here, 3 bytes): switch, effect
-///   mode, content mode; see `a3953::structures::SpatialAudio` for the full citation.
-/// - `unknown_health_and_gap` (`custom_length + 131 .. custom_length + 136` here, 5 bytes): four
-///   "daily care" health-tracking fields (sedentary reminder, sitting posture, heart rate
-///   abnormality alarm and its threshold) that read as all-zero on this earbud and may belong to a
-///   different product category sharing the same parser, plus one trailing byte `R0` never reads
-///   at all. None have a located set command.
-/// - `device_colour` and `press_sensitivity`: only present when `R0`'s own length check
-///   (`bArr.length > 163`, i.e. this packet's body is longer than 154 bytes) holds; a 1-byte ASCII
-///   colour code with no located meaning, and a 1-byte value (see
-///   `a3953::structures::PressSensitivity` for its citation).
-/// - `unknown_suffix`: whatever's left; 2 bytes in the captures seen so far.
-#[derive(Debug, Clone, PartialEq, Eq)]
+// Byte offsets cited inline below are from A3953AnalysisService.R0 (com.oceanwing.soundcore
+// v6.4.0-17); R0's own bArr indices are this packet's index + 9.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct A3953StateUpdatePacket {
     pub tws_status: TwsStatus,
     pub battery: DualBattery,
@@ -141,59 +37,18 @@ pub struct A3953StateUpdatePacket {
     pub unknown_gap: Vec<u8>,
     pub ambient_sound_mode_cycle: AmbientSoundModeCycle,
     pub sound_modes: a3953::structures::SoundModes,
-    pub unknown_personal_anc_test_info: Vec<u8>,
     pub wearing_detection: WearingDetection,
-    pub unknown_wearing_status: Vec<u8>,
     pub case_battery_level: CaseBatteryLevel,
-    pub unknown_bass_up: Vec<u8>,
     pub ldac: Ldac,
     pub support_two_connections: a3953::structures::SupportTwoConnections,
     pub auto_power_off: AutoPowerOff,
-    pub unknown_hear_id_volume_db: Vec<u8>,
     pub wearing_tone: WearingTone,
     pub low_battery_prompt: LowBatteryPrompt,
     pub ambient_sound_prompt: a3953::structures::AmbientSoundPrompt,
     pub spatial_audio: a3953::structures::SpatialAudio,
-    pub unknown_health_and_gap: Vec<u8>,
     pub device_colour: Option<u8>,
     pub press_sensitivity: Option<a3953::structures::PressSensitivity>,
     pub unknown_suffix: Vec<u8>,
-}
-
-impl Default for A3953StateUpdatePacket {
-    fn default() -> Self {
-        Self {
-            tws_status: Default::default(),
-            battery: Default::default(),
-            dual_firmware_version: Default::default(),
-            serial_number: Default::default(),
-            equalizer_configuration: Default::default(),
-            is_hear_id_initialized: Default::default(),
-            hear_id: Default::default(),
-            custom_length: 0,
-            button_config: Default::default(),
-            unknown_gap: Vec::new(),
-            ambient_sound_mode_cycle: Default::default(),
-            sound_modes: Default::default(),
-            unknown_personal_anc_test_info: vec![0; 6],
-            wearing_detection: Default::default(),
-            unknown_wearing_status: vec![0; 2],
-            case_battery_level: Default::default(),
-            unknown_bass_up: vec![0; 1],
-            ldac: Default::default(),
-            support_two_connections: Default::default(),
-            auto_power_off: Default::default(),
-            unknown_hear_id_volume_db: vec![0; 1],
-            wearing_tone: Default::default(),
-            low_battery_prompt: Default::default(),
-            ambient_sound_prompt: Default::default(),
-            spatial_audio: Default::default(),
-            unknown_health_and_gap: vec![0; 5],
-            device_colour: None,
-            press_sensitivity: None,
-            unknown_suffix: Vec::new(),
-        }
-    }
 }
 
 impl FromPacketBody for A3953StateUpdatePacket {
@@ -208,34 +63,37 @@ impl FromPacketBody for A3953StateUpdatePacket {
             let (input, battery) = DualBattery::take(input)?;
             let (input, dual_firmware_version) = DualFirmwareVersion::take(input)?;
             let (input, serial_number) = SerialNumber::take(input)?;
+            // bArr[41..63]: preset id + 2x10 raw band bytes, both channels (right duplicates left)
             let (input, equalizer_configuration) =
                 CommonEqualizerConfiguration::<2, 10>::take(input)?;
-            let (input, hear_id_status) = le_u8(input)?;
+            let (input, hear_id_status) = le_u8(input)?; // bArr[63]: 255/254 = no hear id data
             let is_hear_id_initialized = a3953::structures::IsHearIdInitialized(
                 hear_id_status != 255 && hear_id_status != 254,
             );
+            // bArr[64..112], same wire format as a3955 (DRC coefficients in VolumeAdjustments::apply_drc)
             let (input, hear_id) = CustomHearId::<2, 10>::take_with_music_genre_at_end(input)?;
-            let (input, custom_length) = le_u8(input)?;
-            let (input, button_config) = a3953::structures::ButtonConfig::take(input)?;
-            let gap_len = (custom_length as usize).saturating_sub(18);
+            let (input, custom_length) = le_u8(input)?; // bArr[112]: base offset for fields below
+            let (input, button_config) = a3953::structures::ButtonConfig::take(input)?; // bArr[113..129]
+            let gap_len = (custom_length as usize).saturating_sub(18); // usually 0; nonzero if custom_length != 18
             let (input, unknown_gap) = take(gap_len)(input)?;
-            let (input, ambient_sound_mode_cycle) = AmbientSoundModeCycle::take(input)?;
+            let (input, ambient_sound_mode_cycle) = AmbientSoundModeCycle::take(input)?; // read-only, no write command found
             let (input, sound_modes) = a3953::structures::SoundModes::take(input)?;
-            let (input, unknown_personal_anc_test_info) = take(6usize)(input)?;
+            let (input, _unknown_personal_anc_test_info) = take(6usize)(input)?; // test time/volume/result, always 255/255 seen so far
             let (input, wearing_detection) = WearingDetection::take(input)?;
-            let (input, unknown_wearing_status) = take(2usize)(input)?;
+            let (input, _unknown_wearing_status) = take(2usize)(input)?; // left/right in-ear status, read-only
             let (input, case_battery_level) = CaseBatteryLevel::take(input)?;
-            let (input, unknown_bass_up) = take(1usize)(input)?;
+            let (input, _unknown_bass_up) = take(1usize)(input)?; // "bass up" toggle, no write command found
             let (input, ldac) = Ldac::take(input)?;
             let (input, support_two_connections) =
                 a3953::structures::SupportTwoConnections::take(input)?;
             let (input, auto_power_off) = AutoPowerOff::take(input)?;
-            let (input, unknown_hear_id_volume_db) = take(1usize)(input)?;
-            let (input, wearing_tone) = WearingTone::take(input)?;
+            let (input, _unknown_hear_id_volume_db) = take(1usize)(input)?; // hear id feature, not implemented
+            let (input, wearing_tone) = WearingTone::take(input)?; // app calls this "in ear beep"
             let (input, low_battery_prompt) = LowBatteryPrompt::take(input)?;
             let (input, ambient_sound_prompt) = a3953::structures::AmbientSoundPrompt::take(input)?;
             let (input, spatial_audio) = a3953::structures::SpatialAudio::take(input)?;
-            let (input, unknown_health_and_gap) = take(5usize)(input)?;
+            let (input, _unknown_health_and_gap) = take(5usize)(input)?; // daily-care health fields, all-zero on this earbud
+            // device_colour/press_sensitivity only present when the body is >154 bytes (R0's own length check)
             let (input, (device_colour, press_sensitivity)) = if total_len > 154 {
                 let (input, colour_byte) = le_u8(input)?;
                 let (input, press_sensitivity) = a3953::structures::PressSensitivity::take(input)?;
@@ -243,7 +101,7 @@ impl FromPacketBody for A3953StateUpdatePacket {
             } else {
                 (input, (None, None))
             };
-            let (input, unknown_suffix) = map(rest, |s: &[u8]| s.to_vec()).parse(input)?;
+            let (input, unknown_suffix) = map(rest, |s: &[u8]| s.to_vec()).parse(input)?; // trailing bytes, 2 in captures seen so far
             Ok((
                 input,
                 Self {
@@ -259,20 +117,15 @@ impl FromPacketBody for A3953StateUpdatePacket {
                     unknown_gap: unknown_gap.to_vec(),
                     ambient_sound_mode_cycle,
                     sound_modes,
-                    unknown_personal_anc_test_info: unknown_personal_anc_test_info.to_vec(),
                     wearing_detection,
-                    unknown_wearing_status: unknown_wearing_status.to_vec(),
                     case_battery_level,
-                    unknown_bass_up: unknown_bass_up.to_vec(),
                     ldac,
                     support_two_connections,
                     auto_power_off,
-                    unknown_hear_id_volume_db: unknown_hear_id_volume_db.to_vec(),
                     wearing_tone,
                     low_battery_prompt,
                     ambient_sound_prompt,
                     spatial_audio,
-                    unknown_health_and_gap: unknown_health_and_gap.to_vec(),
                     device_colour,
                     press_sensitivity,
                     unknown_suffix,
@@ -309,20 +162,20 @@ impl ToPacket for A3953StateUpdatePacket {
             .chain(self.unknown_gap.iter().copied())
             .chain(self.ambient_sound_mode_cycle.bytes())
             .chain(self.sound_modes.bytes())
-            .chain(self.unknown_personal_anc_test_info.iter().copied())
+            .chain([0; 6]) // unknown personal ANC test info
             .chain(self.wearing_detection.bytes())
-            .chain(self.unknown_wearing_status.iter().copied())
+            .chain([0; 2]) // unknown wearing status
             .chain(self.case_battery_level.bytes())
-            .chain(self.unknown_bass_up.iter().copied())
+            .chain(iter::once(0)) // unknown bass up
             .chain(self.ldac.bytes())
             .chain(self.support_two_connections.bytes())
             .chain(self.auto_power_off.bytes())
-            .chain(self.unknown_hear_id_volume_db.iter().copied())
+            .chain(iter::once(0)) // unknown hear id volume db
             .chain(self.wearing_tone.bytes())
             .chain(self.low_battery_prompt.bytes())
             .chain(self.ambient_sound_prompt.bytes())
             .chain(self.spatial_audio.bytes())
-            .chain(self.unknown_health_and_gap.iter().copied())
+            .chain([0; 5]) // unknown health and gap
             .chain(self.device_colour)
             .chain(
                 self.press_sensitivity
