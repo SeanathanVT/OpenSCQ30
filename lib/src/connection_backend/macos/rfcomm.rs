@@ -257,9 +257,16 @@ fn perform_sdp_query(device: &IOBluetoothDevice) -> connection::Result<()> {
             source: None,
             location: Location::caller(),
         }),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(connection::Error::TimedOut {
-            action: "SDP query",
-        }),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            // IOBluetoothDevice doesn't retain the target passed to performSDPQuery, and there's
+            // no way to cancel it, so the query may still be in flight here. Dropping delegate
+            // normally would risk sdpQueryComplete: firing into deallocated memory later; leak it
+            // instead (bounded: at most once per timed-out query).
+            std::mem::forget(delegate);
+            Err(connection::Error::TimedOut {
+                action: "SDP query",
+            })
+        }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
             Err(connection::Error::DeviceNotFound {
                 source: None,
