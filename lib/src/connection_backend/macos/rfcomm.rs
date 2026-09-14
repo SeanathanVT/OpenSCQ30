@@ -608,14 +608,13 @@ impl RfcommConnection for MacosRfcommConnection {
                 source: Box::new(err),
                 location: Location::caller(),
             })?;
-        let result = tokio::task::spawn_blocking(move || response_receiver.recv())
+        tokio::task::spawn_blocking(move || response_receiver.recv())
             .await
             .expect("connection thread panicked while handling a write")
             .map_err(|err| connection::Error::Other {
                 source: Box::new(err),
                 location: Location::caller(),
-            })?;
-        result
+            })?
     }
 
     fn read_channel(&self) -> mpsc::Receiver<Vec<u8>> {

@@ -14,7 +14,6 @@ use crate::{
     },
 };
 
-/// Command cited in a3953/structures.rs's `PressSensitivity` doc comment.
 const COMMAND: packet::Command = packet::Command([0x04, 0x85]);
 
 pub struct PressSensitivityStateModifier {

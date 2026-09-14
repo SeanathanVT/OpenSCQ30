@@ -210,7 +210,6 @@ low-battery-prompt = Low Battery Prompt
 wearing-detection = Wearing Detection
 press-sensitivity = Press Sensitivity
 ambient-sound-prompt = Ambient Sound Prompt
-support-two-connections = Two Simultaneous Connections
 voice-prompt = Voice Prompt
 side-tone = Side Tone
 dolby-audio = Dolby Audio

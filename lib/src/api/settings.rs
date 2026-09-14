@@ -145,7 +145,6 @@ pub enum SettingId {
     WearingDetection,
     PressSensitivity,
     AmbientSoundPrompt,
-    SupportTwoConnections,
     Volume,
     VoicePrompt,
     AncPersonalizedToEarCanal,

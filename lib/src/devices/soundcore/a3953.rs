@@ -16,28 +16,8 @@ use crate::devices::soundcore::{
 mod modules;
 mod packets;
 mod state;
-pub mod structures;
+mod structures;
 
-// Battery, dual firmware version, serial number, ambient sound mode, wind noise suppression, wear
-// detection, case battery level, LDAC, auto power off, wearing tone (the app calls it "in ear
-// beep"), low battery prompt, ambient sound prompt, spatial audio, press sensitivity, and custom
-// equalizer have all been reverse-engineered against the official app's decompiled source (see
-// packets::state_update, structures.rs, packets::set_equalizer_configuration). Dual connections
-// (multi-device pairing list) reuses this project's shared common::modules::dual_connections
-// wholesale: the enabled bit is the same command A3953CmdService.B0 sends
-// ([0x0B,0x84]/Cmm2CmdData.E1), and a real capture confirmed the [0x0B,0x01] device list
-// request/response matches common::structures::DualConnectionsDevice byte for byte. Button
-// configuration is parsed, and each assignment's
-// action ID is now decoded to a name (see structures::ButtonAction), but it's still not exposed as
-// a setting: no outbound command that writes a button assignment back was found anywhere in the
-// decompiled source, for this device or any other device family that shares the same
-// `ControllerBtnModel` read path.
-// "Bass up" (a device-family-wide EQ model, `BaseDefaultEqHasBassUpM`) has no confirmed link to
-// A3953's own equalizer data (`A3953EqData`, `A3952EqM extends BaseM` directly, not the bass-up
-// base class) and no located command, so it's left unimplemented. Hear ID (personalized hearing
-// profile) is read and round-tripped through equalizer writes unchanged, but not exposed for
-// editing, matching this project's own `a3947`/`a3955` devices, which share this exact command
-// family and byte layout (down to the DRC coefficients).
 soundcore_device!(
     A3953State,
     async |packet_io| {

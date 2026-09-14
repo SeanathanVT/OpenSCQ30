@@ -12,9 +12,9 @@ use crate::{
 
 use super::SpatialAudioSetting;
 
-/// `SpatialAudioMode` maps to `sound_mode` (Music/Movie) and `SpatialAudioMusicMode` maps to
-/// `effect_mode` (Fixed/HeadTracking), matching the naming this project already uses for A3954's
-/// otherwise-unrelated (differently encoded) spatial audio feature.
+// SpatialAudioMode maps to sound_mode (Music/Movie) and SpatialAudioMusicMode maps to effect_mode
+// (Fixed/HeadTracking), matching the naming this project already uses for A3954's
+// otherwise-unrelated (differently encoded) spatial audio feature.
 #[derive(Default)]
 pub struct SpatialAudioSettingHandler;
 

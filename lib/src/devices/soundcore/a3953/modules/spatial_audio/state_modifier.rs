@@ -14,7 +14,6 @@ use crate::{
     },
 };
 
-/// Command cited in a3953/structures.rs's `SpatialAudio` doc comment.
 const COMMAND: packet::Command = packet::Command([0x10, 0x81]);
 
 pub struct SpatialAudioStateModifier {
