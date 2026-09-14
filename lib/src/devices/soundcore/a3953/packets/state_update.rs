@@ -126,7 +126,10 @@ impl FromPacketBody for A3953StateUpdatePacket {
             let (input, ambient_sound_prompt) = a3953::structures::AmbientSoundPrompt::take(input)?;
             let (input, spatial_audio) = a3953::structures::SpatialAudio::take(input)?;
             let (input, _unknown_health_and_gap) = take(5usize)(input)?; // daily-care health fields, all-zero on this earbud
-            // device_colour/press_sensitivity only present when the body is >154 bytes (R0's own length check)
+            // device_colour/press_sensitivity only present when the body is >154 bytes (R0's own
+            // length check). device_colour is an ASCII char, not a numeric id; '2' = Cloud White
+            // confirmed on real hardware, other colors unconfirmed. Not exposed: no device in this
+            // project exposes case color.
             let (input, (device_colour, press_sensitivity)) = if total_len > 154 {
                 let (input, colour_byte) = le_u8(input)?;
                 let (input, press_sensitivity) = a3953::structures::PressSensitivity::take(input)?;
