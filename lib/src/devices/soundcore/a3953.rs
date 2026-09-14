@@ -115,8 +115,8 @@ soundcore_device!(
     async |builder| {
         builder.module_collection().add_state_update();
 
-        builder.tws_status();
         builder.serial_number_and_dual_firmware_version();
+        builder.tws_status();
         // Only ever observed at 5/5 (fully charged); assumed max_level 5 to match the structurally
         // similar A3947 (Liberty 4 NC) until a partial-charge capture confirms or corrects this.
         builder.dual_battery(5);

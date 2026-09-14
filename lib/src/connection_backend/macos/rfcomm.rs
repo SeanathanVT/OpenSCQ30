@@ -149,11 +149,20 @@ fn device_with_mac_address(
     )
 }
 
+// A device that's already connected (e.g. auto-reconnected for audio, or from a previous
+// session) can leave openRFCOMMChannelAsync stuck in "not open" forever (see
+// MACOS_RFCOMM_BRIEFING.md's "Known limitation" section); the only known workaround is closing
+// the existing connection first, so this always cycles it rather than no-opping when already
+// connected. Audibly disconnects/reconnects the device (e.g. an audio chime) on every connect.
 fn ensure_connected(device: &IOBluetoothDevice) -> connection::Result<()> {
     if unsafe { device.isConnected() } {
-        return Ok(());
+        debug!("device already connected, closing first to avoid a stuck RFCOMM channel");
+        let close_status = unsafe { device.closeConnection() };
+        if close_status != 0 {
+            debug!("closeConnection returned status {close_status}, opening anyway");
+        }
     }
-    debug!("device not connected, opening baseband connection");
+    debug!("opening baseband connection");
     let status = unsafe { device.openConnection() };
     if status != 0 {
         return Err(connection::Error::DeviceNotFound {
