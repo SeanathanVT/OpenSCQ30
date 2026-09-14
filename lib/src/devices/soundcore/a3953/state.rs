@@ -3,11 +3,13 @@ use openscq30_lib_macros::Has;
 use crate::devices::soundcore::{
     a3953,
     common::{
+        modules::reset_button_configuration::ResetButtonConfigurationPending,
         state::Update,
         structures::{
-            AutoPowerOff, CaseBatteryLevel, CommonEqualizerConfiguration, CustomHearId,
-            DualBattery, DualConnections, DualConnectionsDevice, DualFirmwareVersion, Ldac,
-            LowBatteryPrompt, SerialNumber, TwsStatus, WearingDetection, WearingTone,
+            AmbientSoundModeCycle, AutoPowerOff, CaseBatteryLevel, CommonEqualizerConfiguration,
+            CustomHearId, DualBattery, DualConnections, DualConnectionsDevice, DualFirmwareVersion,
+            Ldac, LowBatteryPrompt, SerialNumber, TwsStatus, WearingDetection, WearingTone,
+            button_configuration::ButtonStatusCollection,
         },
     },
 };
@@ -21,6 +23,7 @@ pub struct A3953State {
     equalizer_configuration: CommonEqualizerConfiguration<2, 10>,
     is_hear_id_initialized: a3953::structures::IsHearIdInitialized,
     hear_id: CustomHearId<2, 10>,
+    ambient_sound_mode_cycle: AmbientSoundModeCycle,
     sound_modes: a3953::structures::SoundModes,
     wearing_detection: WearingDetection,
     case_battery_level: CaseBatteryLevel,
@@ -32,6 +35,8 @@ pub struct A3953State {
     ambient_sound_prompt: a3953::structures::AmbientSoundPrompt,
     spatial_audio: a3953::structures::SpatialAudio,
     press_sensitivity: a3953::structures::PressSensitivity,
+    button_configuration: ButtonStatusCollection<8>,
+    button_reset_pending: ResetButtonConfigurationPending,
 }
 
 impl A3953State {
@@ -47,6 +52,7 @@ impl A3953State {
             equalizer_configuration: packet.equalizer_configuration,
             is_hear_id_initialized: packet.is_hear_id_initialized,
             hear_id: packet.hear_id,
+            ambient_sound_mode_cycle: packet.ambient_sound_mode_cycle,
             sound_modes: packet.sound_modes,
             wearing_detection: packet.wearing_detection,
             case_battery_level: packet.case_battery_level,
@@ -61,6 +67,8 @@ impl A3953State {
             ambient_sound_prompt: packet.ambient_sound_prompt,
             spatial_audio: packet.spatial_audio,
             press_sensitivity: packet.press_sensitivity.unwrap_or_default(),
+            button_configuration: packet.button_configuration,
+            button_reset_pending: ResetButtonConfigurationPending::default(),
         }
     }
 }
@@ -79,9 +87,9 @@ impl Update<a3953::packets::A3953StateUpdatePacket> for A3953State {
             is_hear_id_initialized,
             hear_id,
             custom_length: _,
-            button_config: _,
+            button_configuration,
             unknown_gap: _,
-            ambient_sound_mode_cycle: _,
+            ambient_sound_mode_cycle,
             sound_modes,
             wearing_detection,
             case_battery_level,
@@ -104,6 +112,7 @@ impl Update<a3953::packets::A3953StateUpdatePacket> for A3953State {
         self.equalizer_configuration = equalizer_configuration;
         self.is_hear_id_initialized = is_hear_id_initialized;
         self.hear_id = hear_id;
+        self.ambient_sound_mode_cycle = ambient_sound_mode_cycle;
         self.sound_modes = sound_modes;
         self.wearing_detection = wearing_detection;
         self.case_battery_level = case_battery_level;
@@ -115,5 +124,6 @@ impl Update<a3953::packets::A3953StateUpdatePacket> for A3953State {
         self.ambient_sound_prompt = ambient_sound_prompt;
         self.spatial_audio = spatial_audio;
         self.press_sensitivity = press_sensitivity.unwrap_or_default();
+        self.button_configuration = button_configuration;
     }
 }

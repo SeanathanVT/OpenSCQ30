@@ -5,10 +5,19 @@ use crate::devices::soundcore::{
     common::{
         self,
         macros::soundcore_device,
-        modules::{auto_power_off::AutoPowerOffDuration, equalizer::common_settings_type_2},
+        modules::{
+            auto_power_off::AutoPowerOffDuration,
+            button_configuration::{
+                ButtonConfigurationSettings, ButtonDisableMode, ButtonSettings, COMMON_ACTIONS,
+            },
+            equalizer::common_settings_type_2,
+        },
         packet::{
             inbound::TryToPacket,
             outbound::{RequestState, ToPacket},
+        },
+        structures::button_configuration::{
+            ActionKind, Button, ButtonParseSettings, ButtonPressKind, EnabledFlagKind,
         },
     },
 };
@@ -17,6 +26,74 @@ mod modules;
 mod packets;
 mod state;
 mod structures;
+
+// button_id per press kind (2/0/1/5 for single/double/long/triple) matches this project's
+// existing convention for every other device on this shared command, and was cross-checked byte
+// for byte against CmmBtCmdService.t2's ViewModel caller (BaseControllerSelectVM.sendClickTypeCmd).
+// Single-press was confirmed end to end on real hardware (2026-09-14): the write packet decoded
+// exactly as predicted (command [4,129], side=0 for left, button_id=2, TwsLowBits-packed action
+// byte), the read-back matched, and the physical button's behavior changed on the correct earbud
+// only. Double/long/triple use the identical mechanism and the same button_id convention already
+// verified on 4+ other devices, but weren't independently exercised on this device.
+pub const BUTTON_CONFIGURATION_SETTINGS: ButtonConfigurationSettings<8, 4> =
+    ButtonConfigurationSettings {
+        supports_set_all_packet: false,
+        ignore_enabled_flag: true,
+        set_button_action_command_override: None,
+        setting_id_override: None,
+        order: [
+            Button::LeftSinglePress,
+            Button::RightSinglePress,
+            Button::LeftDoublePress,
+            Button::RightDoublePress,
+            Button::LeftLongPress,
+            Button::RightLongPress,
+            Button::LeftTriplePress,
+            Button::RightTriplePress,
+        ],
+        settings: [
+            ButtonSettings {
+                parse_settings: ButtonParseSettings {
+                    enabled_flag_kind: EnabledFlagKind::TwsLowBits,
+                    action_kind: ActionKind::TwsLowBits,
+                },
+                button_id: 2,
+                press_kind: ButtonPressKind::Single,
+                available_actions: COMMON_ACTIONS,
+                disable_mode: ButtonDisableMode::IndividualDisable,
+            },
+            ButtonSettings {
+                parse_settings: ButtonParseSettings {
+                    enabled_flag_kind: EnabledFlagKind::TwsLowBits,
+                    action_kind: ActionKind::TwsLowBits,
+                },
+                button_id: 0,
+                press_kind: ButtonPressKind::Double,
+                available_actions: COMMON_ACTIONS,
+                disable_mode: ButtonDisableMode::IndividualDisable,
+            },
+            ButtonSettings {
+                parse_settings: ButtonParseSettings {
+                    enabled_flag_kind: EnabledFlagKind::TwsLowBits,
+                    action_kind: ActionKind::TwsLowBits,
+                },
+                button_id: 1,
+                press_kind: ButtonPressKind::Long,
+                available_actions: COMMON_ACTIONS,
+                disable_mode: ButtonDisableMode::IndividualDisable,
+            },
+            ButtonSettings {
+                parse_settings: ButtonParseSettings {
+                    enabled_flag_kind: EnabledFlagKind::TwsLowBits,
+                    action_kind: ActionKind::TwsLowBits,
+                },
+                button_id: 5,
+                press_kind: ButtonPressKind::Triple,
+                available_actions: COMMON_ACTIONS,
+                disable_mode: ButtonDisableMode::IndividualDisable,
+            },
+        ],
+    };
 
 soundcore_device!(
     A3953State,
@@ -43,6 +120,9 @@ soundcore_device!(
         // similar A3947 (Liberty 4 NC) until a partial-charge capture confirms or corrects this.
         builder.dual_battery(5);
         builder.a3953_sound_modes();
+        builder.ambient_sound_mode_cycle();
+        builder.button_configuration(&BUTTON_CONFIGURATION_SETTINGS);
+        builder.reset_button_configuration::<A3953StateUpdatePacket>(RequestState.to_packet());
         builder.wearing_detection();
         // Same caveat as dual_battery above: the device's own S() clamp permits 0-9, but no
         // partial-charge capture exists to confirm whether 5 is really this device's max.
@@ -115,6 +195,9 @@ mod tests {
             (SettingId::SerialNumber, "395354C633CCEEE8".into()),
             (SettingId::AmbientSoundMode, "Normal".into()),
             (SettingId::WindNoiseSuppression, true.into()),
+            (SettingId::NormalModeInCycle, false.into()),
+            (SettingId::TransparencyModeInCycle, true.into()),
+            (SettingId::NoiseCancelingModeInCycle, true.into()),
             (SettingId::WearingDetection, true.into()),
             (SettingId::CaseBatteryLevel, "5/5".into()),
             (SettingId::Ldac, false.into()),

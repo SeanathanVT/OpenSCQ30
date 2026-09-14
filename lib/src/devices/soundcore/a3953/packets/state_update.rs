@@ -16,14 +16,14 @@ use crate::devices::soundcore::{
         structures::{
             AmbientSoundModeCycle, AutoPowerOff, CaseBatteryLevel, CommonEqualizerConfiguration,
             CustomHearId, DualBattery, DualFirmwareVersion, Ldac, LowBatteryPrompt, SerialNumber,
-            TwsStatus, WearingDetection, WearingTone,
+            TwsStatus, WearingDetection, WearingTone, button_configuration::ButtonStatusCollection,
         },
     },
 };
 
 // Byte offsets cited inline below are from A3953AnalysisService.R0 (com.oceanwing.soundcore
 // v6.4.0-17); R0's own bArr indices are this packet's index + 9.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct A3953StateUpdatePacket {
     pub tws_status: TwsStatus,
     pub battery: DualBattery,
@@ -33,7 +33,7 @@ pub struct A3953StateUpdatePacket {
     pub is_hear_id_initialized: a3953::structures::IsHearIdInitialized,
     pub hear_id: CustomHearId<2, 10>,
     pub custom_length: u8,
-    pub button_config: a3953::structures::ButtonConfig,
+    pub button_configuration: ButtonStatusCollection<8>,
     pub unknown_gap: Vec<u8>,
     pub ambient_sound_mode_cycle: AmbientSoundModeCycle,
     pub sound_modes: a3953::structures::SoundModes,
@@ -49,6 +49,37 @@ pub struct A3953StateUpdatePacket {
     pub device_colour: Option<u8>,
     pub press_sensitivity: Option<a3953::structures::PressSensitivity>,
     pub unknown_suffix: Vec<u8>,
+}
+
+impl Default for A3953StateUpdatePacket {
+    fn default() -> Self {
+        Self {
+            tws_status: Default::default(),
+            battery: Default::default(),
+            dual_firmware_version: Default::default(),
+            serial_number: Default::default(),
+            equalizer_configuration: Default::default(),
+            is_hear_id_initialized: Default::default(),
+            hear_id: Default::default(),
+            custom_length: Default::default(),
+            button_configuration: a3953::BUTTON_CONFIGURATION_SETTINGS.default_status_collection(),
+            unknown_gap: Default::default(),
+            ambient_sound_mode_cycle: Default::default(),
+            sound_modes: Default::default(),
+            wearing_detection: Default::default(),
+            case_battery_level: Default::default(),
+            ldac: Default::default(),
+            dual_connections_enabled: Default::default(),
+            auto_power_off: Default::default(),
+            wearing_tone: Default::default(),
+            low_battery_prompt: Default::default(),
+            ambient_sound_prompt: Default::default(),
+            spatial_audio: Default::default(),
+            device_colour: Default::default(),
+            press_sensitivity: Default::default(),
+            unknown_suffix: Default::default(),
+        }
+    }
 }
 
 impl FromPacketBody for A3953StateUpdatePacket {
@@ -73,10 +104,13 @@ impl FromPacketBody for A3953StateUpdatePacket {
             // bArr[64..112], same wire format as a3955 (DRC coefficients in VolumeAdjustments::apply_drc)
             let (input, hear_id) = CustomHearId::<2, 10>::take_with_music_genre_at_end(input)?;
             let (input, custom_length) = le_u8(input)?; // bArr[112]: base offset for fields below
-            let (input, button_config) = a3953::structures::ButtonConfig::take(input)?; // bArr[113..129]
+            // bArr[113..129], see a3953::BUTTON_CONFIGURATION_SETTINGS (write confirmed on real hardware)
+            let (input, button_configuration) = ButtonStatusCollection::take(
+                a3953::BUTTON_CONFIGURATION_SETTINGS.parse_settings(),
+            )(input)?;
             let gap_len = (custom_length as usize).saturating_sub(18); // usually 0; nonzero if custom_length != 18
             let (input, unknown_gap) = take(gap_len)(input)?;
-            let (input, ambient_sound_mode_cycle) = AmbientSoundModeCycle::take(input)?; // read-only, no write command found
+            let (input, ambient_sound_mode_cycle) = AmbientSoundModeCycle::take(input)?;
             let (input, sound_modes) = a3953::structures::SoundModes::take(input)?;
             let (input, _unknown_personal_anc_test_info) = take(6usize)(input)?; // test time/volume/result, always 255/255 seen so far
             let (input, wearing_detection) = WearingDetection::take(input)?;
@@ -112,7 +146,7 @@ impl FromPacketBody for A3953StateUpdatePacket {
                     is_hear_id_initialized,
                     hear_id,
                     custom_length,
-                    button_config,
+                    button_configuration,
                     unknown_gap: unknown_gap.to_vec(),
                     ambient_sound_mode_cycle,
                     sound_modes,
@@ -157,7 +191,10 @@ impl ToPacket for A3953StateUpdatePacket {
             }))
             .chain(self.hear_id.bytes_with_music_genre_at_end())
             .chain(iter::once(self.custom_length))
-            .chain(self.button_config.bytes())
+            .chain(
+                self.button_configuration
+                    .bytes(a3953::BUTTON_CONFIGURATION_SETTINGS.parse_settings()),
+            )
             .chain(self.unknown_gap.iter().copied())
             .chain(self.ambient_sound_mode_cycle.bytes())
             .chain(self.sound_modes.bytes())

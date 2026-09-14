@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### General
+
+#### Features
+
+- Add support for Soundcore Liberty 4 (A3953)
+- Add macOS support (beta)
+
 ## v2.12.0
 
 ### General
