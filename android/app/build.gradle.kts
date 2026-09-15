@@ -114,7 +114,7 @@ android {
         compose = true
         buildConfig = true
     }
-    ndkVersion = "30.0.16248370"
+    ndkVersion = "29.0.14206865"
     packaging {
         resources {
             excludes += "/META-INF/*"
