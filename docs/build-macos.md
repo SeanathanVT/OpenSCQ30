@@ -21,4 +21,4 @@
 3. Run `just build-gui-bundle`
 4. The app bundle can be found at `build-output/OpenSCQ30.app`
 
-The app bundle isn't code signed or notarized, so macOS will refuse to open it with a plain double click. Right click the app and choose "Open" instead, then confirm in the dialog that appears.
+The app bundle is ad-hoc signed but not notarized. A locally built copy should open normally. A copy downloaded from elsewhere (e.g. a release zip) will still have the quarantine flag set, so macOS will refuse to open it with a plain double click; right click the app and choose "Open" instead, then confirm in the dialog that appears.
