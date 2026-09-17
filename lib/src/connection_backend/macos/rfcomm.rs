@@ -37,7 +37,6 @@ const SERVICE_CLASS_ID_LIST_ATTRIBUTE_ID: BluetoothSDPServiceAttributeID = 0x000
 // retry budget is generous rather than tight.
 const IO_RETURN_NOT_OPEN: c_int = 0xE00002CDu32 as c_int;
 const WRITE_NOT_OPEN_RETRIES: u32 = 50;
-const WRITE_NOT_OPEN_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
 
 const SDP_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -112,13 +111,12 @@ impl RfcommBackend for MacosRfcommBackend {
                 debug!("opening RFCOMM channel");
                 match MacosRfcommConnection::open(device.clone(), channel_id) {
                     Ok(connection) => Ok(Arc::new(connection)),
-                    // A pre-existing baseband connection (auto-reconnected for audio, or left
-                    // over from a previous session) can leave the RFCOMM channel stuck in "not
-                    // open" forever. Cycling the baseband connection is the only known
-                    // workaround, but it audibly disconnects/reconnects the device (e.g. an
-                    // audio chime) and costs a few seconds, so it's only done once the fast
-                    // path has demonstrably failed rather than on every connect.
-                    Err(connection::Error::TimedOut { .. }) if was_connected => {
+                    // The RFCOMM channel can get stuck "not open" forever regardless of whether
+                    // the baseband connection was just opened or already existed. Cycling it is
+                    // the only known workaround, but it audibly disconnects/reconnects the device
+                    // (e.g. an audio chime) and costs a few seconds, so it's only done once the
+                    // fast path has demonstrably failed rather than on every connect.
+                    Err(connection::Error::TimedOut { .. }) => {
                         debug!("RFCOMM channel did not open, cycling baseband connection");
                         cycle_baseband_connection(&device)?;
                         debug!("retrying RFCOMM channel open");
@@ -184,8 +182,12 @@ fn cycle_baseband_connection(device: &IOBluetoothDevice) -> connection::Result<(
     let started_at = std::time::Instant::now();
     while unsafe { device.isConnected() } {
         if started_at.elapsed() >= BASEBAND_CLOSE_TIMEOUT {
-            debug!("baseband connection still open after close timeout, opening anyway");
-            break;
+            // Opening now would race the still-in-flight close: the exact precondition that
+            // leaves the RFCOMM channel permanently stuck (see BASEBAND_CLOSE_TIMEOUT above).
+            // Fail instead of guaranteeing that same failure.
+            return Err(connection::Error::TimedOut {
+                action: "close baseband connection",
+            });
         }
         thread::sleep(BASEBAND_CLOSE_POLL_INTERVAL);
     }
@@ -251,9 +253,9 @@ fn service_record_for_uuid(
     )
 }
 
-// macOS only populates the SDP cache once System Settings' device info pane has been opened, so query if empty.
-// ponytail: only queries on a fully empty cache; forcing a fresh query on every connect was tried and reverted
-// after it caused performSDPQuery to hang indefinitely when called repeatedly in quick succession.
+// macOS only populates the SDP cache once System Settings' device info pane has been opened, so
+// query if empty. Not forced on every connect: performSDPQuery can hang indefinitely when called
+// repeatedly in quick succession.
 fn service_uuids(device: &IOBluetoothDevice) -> HashSet<Uuid> {
     let mut records = cached_service_records(device);
     if records.is_empty() {
@@ -592,10 +594,11 @@ fn write_chunk(channel: &IOBluetoothRFCOMMChannel, chunk: &[u8]) -> connection::
             break;
         }
         debug!("channel not open yet, retrying write ({attempt})");
-        // The port that delegate callbacks are dispatched through isn't registered until the
-        // first successful write, so pumping the run loop here has nothing to catch yet: it
-        // needs an actual wall-clock wait for the channel to finish opening, not a pump.
-        thread::sleep(WRITE_NOT_OPEN_RETRY_DELAY);
+        // wait_for_open_complete already confirmed the channel opened once before any write is
+        // attempted, so a not-open status here is a transient stall on a live connection, not
+        // the initial-open race: pump so a real rfcommChannelClosed: during the stall is caught
+        // instead of blocking through it.
+        pump_run_loop();
     }
     debug!("writeSync status: {status}, channel isOpen: {}", unsafe {
         channel.isOpen()
@@ -628,7 +631,7 @@ fn run_connection_thread(
     let delegate = RfcommDelegate::new(
         open_complete_sender,
         data_sender,
-        status_sender,
+        status_sender.clone(),
         running.clone(),
     );
 
@@ -670,7 +673,7 @@ fn run_connection_thread(
 
     // Empirically, channel callbacks (rfcommChannelData etc.) are delivered on whichever thread
     // pumps the run loop here, unlike SDP query callbacks which need the real main thread
-    // (see perform_sdp_query) — so writes and pumping stay on this dedicated thread.
+    // (see perform_sdp_query), so writes and pumping stay on this dedicated thread.
     debug!("channel opened, running write/pump loop");
 
     // Service any write requests queued while the channel was still opening.
@@ -707,6 +710,10 @@ fn run_connection_thread(
         channel.setDelegate(None);
         channel.closeChannel();
     }
+    // rfcommChannelClosed: (the only other place this is sent) can't fire once the delegate
+    // above is cleared, so a locally-initiated close would otherwise leave connection_status()
+    // stuck reporting Connected forever.
+    status_sender.send_replace(connection::ConnectionStatus::Disconnected);
     debug!("connection thread exiting");
 }
 

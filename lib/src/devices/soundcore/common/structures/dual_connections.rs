@@ -35,7 +35,13 @@ impl DualConnectionsDevice {
             // Name, right padded with 0s. Clamped to what's actually left: real devices have been
             // observed sending a lone trailing entry (alone in the final packet of a multi-packet
             // response) padded a few bytes short of what its own length byte implies.
-            let name_length = usize::from(length.saturating_sub(8)).min(input.len());
+            let declared_name_length = usize::from(length.saturating_sub(8));
+            let name_length = declared_name_length.min(input.len());
+            if name_length < declared_name_length {
+                tracing::warn!(
+                    "dual connections device length byte claims {declared_name_length} name bytes, only {name_length} remain, truncating"
+                );
+            }
             let (input, name_bytes) = take(name_length).parse_complete(input)?;
 
             let mac_address = MacAddr6::from(<[u8; 6]>::from(mac_address_bytes));

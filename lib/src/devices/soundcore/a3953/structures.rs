@@ -14,8 +14,8 @@ use crate::devices::soundcore::common::{
 // [0x06,0x81] outbound (A3953CmdService.G1) / A3953AnalysisService.T2 inbound; anc_option_manual
 // clamped 1-6, trans_option 0-2 (write only), other fields raw; wind_noise.is_detected never sent
 // back. The official app only shows 3 ambient sound modes for this device (Normal/Transparency/
-// Noise Canceling), no adjustable ANC strength — confirmed by direct inspection on real hardware
-// (2026-09-14) — so anc_option_manual/anc_option_auto/anc_automation_mode/anc_auto_sensitivity_level
+// Noise Canceling), no adjustable ANC strength, confirmed by direct inspection on real hardware
+// (2026-09-14), so anc_option_manual/anc_option_auto/anc_automation_mode/anc_auto_sensitivity_level
 // and trans_option are preserved on write but deliberately not exposed as settings.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct SoundModes {
@@ -103,7 +103,7 @@ impl PressSensitivity {
     }
 
     pub fn bytes(&self) -> [u8; 1] {
-        [self.0.min(4)]
+        [self.0]
     }
 }
 
