@@ -41,6 +41,16 @@ const WRITE_NOT_OPEN_RETRY_DELAY: std::time::Duration = std::time::Duration::fro
 
 const SDP_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+// How long to wait for rfcommChannelOpenComplete after openRFCOMMChannelAsync returns success.
+// Observed at ~0.5-1s on macOS 15 when it succeeds; when the channel is stuck it never arrives.
+const RFCOMM_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+// closeConnection is asynchronous: isConnected() stays true for a while afterwards (~0.5s
+// observed on macOS 15), and calling openConnection/openRFCOMMChannelAsync during that window
+// leaves the RFCOMM channel permanently "not open". Bounds how long to wait for it to settle.
+const BASEBAND_CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const BASEBAND_CLOSE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
 // CFRunLoopRun() returns immediately if nothing is scheduled at the moment it's called, so the
 // connection's event loop re-enters it in short bursts instead of once indefinitely.
 const RFCOMM_EVENT_POLL_SECONDS: CFTimeInterval = 0.1;
@@ -90,15 +100,32 @@ impl RfcommBackend for MacosRfcommBackend {
                 debug!("finding device with desired mac address");
                 let device = device_with_mac_address(mac_address)?;
 
-                debug!("ensuring baseband connection");
-                ensure_connected(&device)?;
+                let was_connected = unsafe { device.isConnected() };
+                if !was_connected {
+                    debug!("opening baseband connection");
+                    open_baseband_connection(&device)?;
+                }
 
                 debug!("selecting RFCOMM service");
                 let channel_id = select_channel_id(&device, &service_selection_strategy)?;
 
                 debug!("opening RFCOMM channel");
-                let connection = MacosRfcommConnection::open(device, channel_id)?;
-                Ok(Arc::new(connection))
+                match MacosRfcommConnection::open(device.clone(), channel_id) {
+                    Ok(connection) => Ok(Arc::new(connection)),
+                    // A pre-existing baseband connection (auto-reconnected for audio, or left
+                    // over from a previous session) can leave the RFCOMM channel stuck in "not
+                    // open" forever. Cycling the baseband connection is the only known
+                    // workaround, but it audibly disconnects/reconnects the device (e.g. an
+                    // audio chime) and costs a few seconds, so it's only done once the fast
+                    // path has demonstrably failed rather than on every connect.
+                    Err(connection::Error::TimedOut { .. }) if was_connected => {
+                        debug!("RFCOMM channel did not open, cycling baseband connection");
+                        cycle_baseband_connection(&device)?;
+                        debug!("retrying RFCOMM channel open");
+                        Ok(Arc::new(MacosRfcommConnection::open(device, channel_id)?))
+                    }
+                    Err(err) => Err(err),
+                }
             },
         )
         .await
@@ -149,20 +176,27 @@ fn device_with_mac_address(
     )
 }
 
-// A device that's already connected (e.g. auto-reconnected for audio, or from a previous
-// session) can leave openRFCOMMChannelAsync stuck in "not open" forever; the only known
-// workaround is closing the existing connection first, so this always cycles it rather than
-// no-opping when already connected. Audibly disconnects/reconnects the device (e.g. an audio
-// chime) on every connect.
-fn ensure_connected(device: &IOBluetoothDevice) -> connection::Result<()> {
-    if unsafe { device.isConnected() } {
-        debug!("device already connected, closing first to avoid a stuck RFCOMM channel");
-        let close_status = unsafe { device.closeConnection() };
-        if close_status != 0 {
-            debug!("closeConnection returned status {close_status}, opening anyway");
-        }
+fn cycle_baseband_connection(device: &IOBluetoothDevice) -> connection::Result<()> {
+    let close_status = unsafe { device.closeConnection() };
+    if close_status != 0 {
+        debug!("closeConnection returned status {close_status}, opening anyway");
     }
-    debug!("opening baseband connection");
+    let started_at = std::time::Instant::now();
+    while unsafe { device.isConnected() } {
+        if started_at.elapsed() >= BASEBAND_CLOSE_TIMEOUT {
+            debug!("baseband connection still open after close timeout, opening anyway");
+            break;
+        }
+        thread::sleep(BASEBAND_CLOSE_POLL_INTERVAL);
+    }
+    debug!(
+        "baseband connection closed after {:?}",
+        started_at.elapsed()
+    );
+    open_baseband_connection(device)
+}
+
+fn open_baseband_connection(device: &IOBluetoothDevice) -> connection::Result<()> {
     let status = unsafe { device.openConnection() };
     if status != 0 {
         return Err(connection::Error::DeviceNotFound {
@@ -359,6 +393,7 @@ fn uuid_from_sdp_uuid(sdp_uuid: &IOBluetoothSDPUUID) -> Option<Uuid> {
 }
 
 struct ConnectionState {
+    open_complete_sender: std::sync::mpsc::Sender<c_int>,
     data_sender: mpsc::Sender<Vec<u8>>,
     status_sender: watch::Sender<connection::ConnectionStatus>,
     running: Arc<AtomicBool>,
@@ -379,6 +414,7 @@ define_class!(
             status: c_int,
         ) {
             debug!("rfcommChannelOpenComplete status: {status}");
+            let _ = self.ivars().open_complete_sender.send(status);
         }
 
         #[unsafe(method(rfcommChannelData:data:length:))]
@@ -420,11 +456,13 @@ define_class!(
 
 impl RfcommDelegate {
     fn new(
+        open_complete_sender: std::sync::mpsc::Sender<c_int>,
         data_sender: mpsc::Sender<Vec<u8>>,
         status_sender: watch::Sender<connection::ConnectionStatus>,
         running: Arc<AtomicBool>,
     ) -> Retained<Self> {
         let this = Self::alloc().set_ivars(ConnectionState {
+            open_complete_sender,
             data_sender,
             running,
             status_sender,
@@ -485,6 +523,40 @@ impl MacosRfcommConnection {
             connection_status_receiver: status_receiver,
             running,
         })
+    }
+}
+
+// Only the callback counts: isOpen() flips to true a few hundred ms before
+// rfcommChannelOpenComplete fires, and writes in that window fail (observed on macOS 15).
+fn wait_for_open_complete(
+    open_complete_receiver: &std::sync::mpsc::Receiver<c_int>,
+) -> connection::Result<()> {
+    let started_at = std::time::Instant::now();
+    loop {
+        match open_complete_receiver.try_recv() {
+            Ok(0) => return Ok(()),
+            Ok(status) => {
+                debug!("RFCOMM channel failed to open with status {status}");
+                return Err(connection::Error::DeviceNotFound {
+                    source: None,
+                    location: Location::caller(),
+                });
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return Err(connection::Error::DeviceNotFound {
+                    source: None,
+                    location: Location::caller(),
+                });
+            }
+        }
+        if started_at.elapsed() >= RFCOMM_OPEN_TIMEOUT {
+            debug!("timed out waiting for rfcommChannelOpenComplete");
+            return Err(connection::Error::TimedOut {
+                action: "open RFCOMM channel",
+            });
+        }
+        pump_run_loop();
     }
 }
 
@@ -552,7 +624,13 @@ fn run_connection_thread(
     let span = debug_span!("MacosRfcommConnection connection thread");
     let _span_guard = span.enter();
 
-    let delegate = RfcommDelegate::new(data_sender, status_sender, running.clone());
+    let (open_complete_sender, open_complete_receiver) = std::sync::mpsc::channel();
+    let delegate = RfcommDelegate::new(
+        open_complete_sender,
+        data_sender,
+        status_sender,
+        running.clone(),
+    );
 
     let mut channel: Option<Retained<IOBluetoothRFCOMMChannel>> = None;
     let delegate_object: &AnyObject = &delegate;
@@ -564,9 +642,6 @@ fn run_connection_thread(
         )
     };
 
-    // openRFCOMMChannelAsync's return here (not the later rfcommChannelOpenComplete callback,
-    // which is unreliable and only useful for logging) is the actual success signal: the channel
-    // object is already valid and retained once this returns kIOReturnSuccess.
     let Some(channel) = channel.filter(|_| start_status == 0) else {
         debug!("openRFCOMMChannelAsync failed to start with status {start_status}");
         let _ = open_result_sender.send(Err(connection::Error::DeviceNotFound {
@@ -575,6 +650,21 @@ fn run_connection_thread(
         }));
         return;
     };
+
+    // openRFCOMMChannelAsync returning kIOReturnSuccess only means the open was started. The
+    // channel isn't usable until rfcommChannelOpenComplete fires, and if it never does (see
+    // cycle_baseband_connection) writes fail with kIOReturnNotOpen forever, so wait for it here
+    // rather than discovering that on the first write. The callback may be delivered on this
+    // thread's run loop or the main thread's depending on macOS version, so pump ours while
+    // waiting and let the channel carry the result either way.
+    if let Err(err) = wait_for_open_complete(&open_complete_receiver) {
+        unsafe {
+            channel.setDelegate(None);
+            channel.closeChannel();
+        }
+        let _ = open_result_sender.send(Err(err));
+        return;
+    }
 
     let _ = open_result_sender.send(Ok(()));
 
