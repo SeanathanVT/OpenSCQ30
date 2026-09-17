@@ -494,8 +494,22 @@ fn pump_run_loop() {
     }
 }
 
+// writeSync:length: must not be called with more bytes than the channel's negotiated MTU (per
+// IOBluetoothRFCOMMChannel's own documented contract). MTU can read back as 0 in the brief
+// window right after connecting before it's negotiated (see WRITE_NOT_OPEN_RETRIES below);
+// fall back to one unsplit write in that case rather than guessing a default.
 fn do_write(channel: &IOBluetoothRFCOMMChannel, data: &[u8]) -> connection::Result<()> {
-    let mut buffer = data.to_vec();
+    let mtu = usize::from(unsafe { channel.getMTU() });
+    let chunk_size = if mtu == 0 { data.len().max(1) } else { mtu };
+    for chunk in data.chunks(chunk_size) {
+        write_chunk(channel, chunk)?;
+    }
+    trace!("wrote packet: {data:?}");
+    Ok(())
+}
+
+fn write_chunk(channel: &IOBluetoothRFCOMMChannel, chunk: &[u8]) -> connection::Result<()> {
+    let mut buffer = chunk.to_vec();
     let mut status;
     let mut attempt = 0;
     loop {
@@ -520,7 +534,6 @@ fn do_write(channel: &IOBluetoothRFCOMMChannel, data: &[u8]) -> connection::Resu
             location: Location::caller(),
         });
     }
-    trace!("wrote packet: {buffer:?}");
     Ok(())
 }
 
