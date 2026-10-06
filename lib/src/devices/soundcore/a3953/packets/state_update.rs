@@ -33,7 +33,7 @@ pub struct A3953StateUpdatePacket {
     pub is_hear_id_initialized: a3953::structures::IsHearIdInitialized,
     pub hear_id: CustomHearId<2, 10>,
     pub custom_length: u8,
-    pub button_configuration: ButtonStatusCollection<8>,
+    pub button_configuration: ButtonStatusCollection<6>,
     pub unknown_gap: Vec<u8>,
     pub ambient_sound_mode_cycle: AmbientSoundModeCycle,
     pub sound_modes: a3953::structures::SoundModes,
@@ -105,9 +105,22 @@ impl FromPacketBody for A3953StateUpdatePacket {
             let (input, hear_id) = CustomHearId::<2, 10>::take_with_music_genre_at_end(input)?;
             let (input, custom_length) = le_u8(input)?; // bArr[112]: base offset for fields below
             // bArr[113..129], see a3953::BUTTON_CONFIGURATION_SETTINGS (write confirmed on real hardware)
-            let (input, button_configuration) = ButtonStatusCollection::take(
-                a3953::BUTTON_CONFIGURATION_SETTINGS.parse_settings(),
-            )(input)?;
+            let [ls, rs, ld, rd, lt, rt] = a3953::BUTTON_CONFIGURATION_SETTINGS.parse_settings();
+            let (
+                input,
+                ButtonStatusCollection([left_single, right_single, left_double, right_double]),
+            ) = ButtonStatusCollection::take([ls, rs, ld, rd])(input)?;
+            let (input, _long_press) = take(4usize)(input)?; // bArr[121..125], not configurable on this device
+            let (input, ButtonStatusCollection([left_triple, right_triple])) =
+                ButtonStatusCollection::take([lt, rt])(input)?;
+            let button_configuration = ButtonStatusCollection::new([
+                left_single,
+                right_single,
+                left_double,
+                right_double,
+                left_triple,
+                right_triple,
+            ]);
             let gap_len = (custom_length as usize).saturating_sub(18); // usually 0; nonzero if custom_length != 18
             let (input, unknown_gap) = take(gap_len)(input)?;
             let (input, ambient_sound_mode_cycle) = AmbientSoundModeCycle::take(input)?;
@@ -180,6 +193,11 @@ impl ToPacket for A3953StateUpdatePacket {
     }
 
     fn body(&self) -> Vec<u8> {
+        let buttons = self
+            .button_configuration
+            .bytes(a3953::BUTTON_CONFIGURATION_SETTINGS.parse_settings())
+            .collect::<Vec<_>>();
+        let (single_double_buttons, triple_buttons) = buttons.split_at(8);
         self.tws_status
             .bytes()
             .into_iter()
@@ -194,10 +212,9 @@ impl ToPacket for A3953StateUpdatePacket {
             }))
             .chain(self.hear_id.bytes_with_music_genre_at_end())
             .chain(iter::once(self.custom_length))
-            .chain(
-                self.button_configuration
-                    .bytes(a3953::BUTTON_CONFIGURATION_SETTINGS.parse_settings()),
-            )
+            .chain(single_double_buttons.iter().copied())
+            .chain([0; 4]) // long press
+            .chain(triple_buttons.iter().copied())
             .chain(self.unknown_gap.iter().copied())
             .chain(self.ambient_sound_mode_cycle.bytes())
             .chain(self.sound_modes.bytes())

@@ -35,7 +35,7 @@ pub struct A3953State {
     ambient_sound_prompt: a3953::structures::AmbientSoundPrompt,
     spatial_audio: a3953::structures::SpatialAudio,
     press_sensitivity: a3953::structures::PressSensitivity,
-    button_configuration: ButtonStatusCollection<8>,
+    button_configuration: ButtonStatusCollection<6>,
     button_reset_pending: ResetButtonConfigurationPending,
 }
 

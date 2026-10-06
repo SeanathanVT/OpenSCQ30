@@ -27,15 +27,16 @@ mod packets;
 mod state;
 mod structures;
 
-// button_id per press kind (2/0/1/5 for single/double/long/triple) matches this project's
-// existing convention for every other device on this shared command, and was cross-checked byte
-// for byte against CmmBtCmdService.t2's ViewModel caller (BaseControllerSelectVM.sendClickTypeCmd).
+// button_id per press kind (2/0/5 for single/double/triple) matches this project's existing
+// convention for every other device on this shared command, and was cross-checked byte for byte
+// against CmmBtCmdService.t2's ViewModel caller (BaseControllerSelectVM.sendClickTypeCmd).
 // Single-press was confirmed end to end on real hardware (2026-09-14): the write packet decoded
 // exactly as predicted (command [4,129], side=0 for left, button_id=2, TwsLowBits-packed action
 // byte), the read-back matched, and the physical button's behavior changed on the correct earbud
-// only. Double/long/triple use the identical mechanism and the same button_id convention already
-// verified on 4+ other devices, but weren't independently exercised on this device.
-pub const BUTTON_CONFIGURATION_SETTINGS: ButtonConfigurationSettings<8, 4> =
+// only. Double and triple press were also confirmed on real hardware. Long press is left out: the
+// official app hides it for this device (A3952BaseCustomUiM.init3953CustomTapBean), and writing it
+// has no effect on real hardware.
+pub const BUTTON_CONFIGURATION_SETTINGS: ButtonConfigurationSettings<6, 3> =
     ButtonConfigurationSettings {
         supports_set_all_packet: false,
         ignore_enabled_flag: true,
@@ -46,8 +47,6 @@ pub const BUTTON_CONFIGURATION_SETTINGS: ButtonConfigurationSettings<8, 4> =
             Button::RightSinglePress,
             Button::LeftDoublePress,
             Button::RightDoublePress,
-            Button::LeftLongPress,
-            Button::RightLongPress,
             Button::LeftTriplePress,
             Button::RightTriplePress,
         ],
@@ -69,16 +68,6 @@ pub const BUTTON_CONFIGURATION_SETTINGS: ButtonConfigurationSettings<8, 4> =
                 },
                 button_id: 0,
                 press_kind: ButtonPressKind::Double,
-                available_actions: COMMON_ACTIONS,
-                disable_mode: ButtonDisableMode::IndividualDisable,
-            },
-            ButtonSettings {
-                parse_settings: ButtonParseSettings {
-                    enabled_flag_kind: EnabledFlagKind::TwsLowBits,
-                    action_kind: ActionKind::TwsLowBits,
-                },
-                button_id: 1,
-                press_kind: ButtonPressKind::Long,
                 available_actions: COMMON_ACTIONS,
                 disable_mode: ButtonDisableMode::IndividualDisable,
             },
