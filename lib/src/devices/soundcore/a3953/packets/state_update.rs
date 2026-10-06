@@ -197,7 +197,7 @@ impl ToPacket for A3953StateUpdatePacket {
             .button_configuration
             .bytes(a3953::BUTTON_CONFIGURATION_SETTINGS.parse_settings())
             .collect::<Vec<_>>();
-        let (single_double_buttons, triple_buttons) = buttons.split_at(8);
+        let (single_double_buttons, triple_buttons) = buttons.split_at(8); // 4 buttons, 2 bytes each
         self.tws_status
             .bytes()
             .into_iter()
